@@ -172,10 +172,14 @@ app.get("/health", (_req, res) => {
 });
 
 // Bearer-token auth for the MCP endpoint (constant-time comparison).
+// Accepts the token either in the Authorization header (preferred) or as a
+// ?token= query parameter — the query form is for clients like the claude.ai
+// custom-connector UI, which has no field for a custom header.
 function requireAuth(req, res, next) {
   const header = req.get("authorization") || "";
   const match = header.match(/^Bearer\s+(.+)$/i);
-  const provided = match ? match[1] : "";
+  const queryToken = typeof req.query.token === "string" ? req.query.token : "";
+  const provided = (match ? match[1] : "") || queryToken;
   const a = Buffer.from(provided);
   const b = Buffer.from(AUTH_TOKEN);
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);

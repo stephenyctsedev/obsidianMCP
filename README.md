@@ -89,14 +89,21 @@ Make sure the subdomain's TLS certificate covers `obsidianmcp.` (a wildcard for
 
 ## Add to Claude
 
-The MCP URL is:
+**Settings → Connectors → Add custom connector.** The claude.ai connector UI
+has no field for a custom `Authorization` header (only OAuth), so pass the token
+as a `?token=` query parameter in the URL and leave the OAuth fields blank:
 
 ```
-https://obsidianmcp.sharecloud-me.synology.me/mcp
+https://obsidianmcp.sharecloud-me.synology.me/mcp?token=<MCP_AUTH_TOKEN>
 ```
 
-In Claude: **Settings → Connectors → Add connector → Remote**, paste the URL,
-and supply the bearer token (`Authorization: Bearer <MCP_AUTH_TOKEN>`).
+The server accepts the token **either** in the `Authorization: Bearer <token>`
+header **or** as `?token=<token>`. Header is preferred (e.g. from Claude Code,
+where you can set headers); the query form exists for the claude.ai UI.
+
+> Security note: with the query form the token ends up in the URL, so it can be
+> written to the NAS reverse-proxy access logs. Over HTTPS it is encrypted in
+> transit. Treat the full URL as a secret and rotate the token if it leaks.
 
 ## Update after a new release
 
