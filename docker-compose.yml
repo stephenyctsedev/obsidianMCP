@@ -1,0 +1,23 @@
+services:
+  obsidian-mcp:
+    build: .
+    image: obsidian-mcp:latest
+    container_name: obsidian-mcp
+    restart: unless-stopped
+    # Run as your Synology user so the container can read/write the vault and
+    # audit log on the bind-mounted host folders. Find the values with:
+    #   ssh into DSM, then `id stephenyctse`  ->  uid=PUID gid=PGID
+    user: "${PUID:-1026}:${PGID:-100}"
+    ports:
+      # host:container — reverse-proxy obsidianmcp. -> http://localhost:8787
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+      VAULT_PATH: /vault
+      AUDIT_LOG_PATH: /data/audit.log
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+    volumes:
+      # Obsidian vault (read-write). Left side is the NAS-native path.
+      - /volume1/homes/stephenyctse/obsidian:/vault
+      # Persistent audit log directory.
+      - ./data:/data
