@@ -43,9 +43,14 @@ openssl rand -hex 32
 # 3. Confirm your Synology uid/gid own the vault, and set PUID/PGID in .env
 id stephenyctse        # -> uid=PUID gid=PGID
 
-# 4. Build and start
-docker-compose up -d --build
+# 4. Pull the published image and start
+docker-compose pull && docker-compose up -d
 ```
+
+> `docker-compose.yml` uses the published image
+> `ghcr.io/stephenyctsedev/obsidianmcp:latest` by default. To build from local
+> source instead, comment out the `image:` line and uncomment `build: .`, then
+> run `docker-compose up -d --build`.
 
 The vault is bind-mounted read-write from `/volume1/homes/stephenyctse/obsidian`
 → `/vault` (edit `docker-compose.yml` if your path differs). The audit log
@@ -93,10 +98,48 @@ https://obsidianmcp.sharecloud-me.synology.me/mcp
 In Claude: **Settings → Connectors → Add connector → Remote**, paste the URL,
 and supply the bearer token (`Authorization: Bearer <MCP_AUTH_TOKEN>`).
 
-## Rebuild after changes
+## Update after a new release
 
 ```bash
-docker-compose up -d --build
+docker-compose pull && docker-compose up -d
 # view the audit trail:
 tail -f data/audit.log
 ```
+
+## CI/CD — publish an image on a version tag
+
+`.github/workflows/docker-publish.yml` builds a **multi-arch** image
+(`linux/amd64` + `linux/arm64`) and pushes it to **GitHub Container Registry**
+whenever you push a `v*` tag. No secrets to configure — it uses the built-in
+`GITHUB_TOKEN`.
+
+Cut a release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+This publishes:
+
+```
+ghcr.io/stephenyctsedev/obsidianmcp:1.0.0
+ghcr.io/stephenyctsedev/obsidianmcp:1.0
+ghcr.io/stephenyctsedev/obsidianmcp:latest
+```
+
+> The package is **private** by default. Either make it public in the repo's
+> Packages settings, or `docker login ghcr.io` on the NAS with a Personal
+> Access Token (scope `read:packages`) before pulling.
+
+### Run the published image on the NAS
+
+`docker-compose.yml` already points at the registry image, so after a new tag
+builds just pull and restart:
+
+```bash
+docker-compose pull && docker-compose up -d
+```
+
+Pin to a specific version for reproducible deploys by changing the tag in
+`docker-compose.yml`, e.g. `ghcr.io/stephenyctsedev/obsidianmcp:1.0.0`.

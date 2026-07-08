@@ -1,7 +1,11 @@
 services:
   obsidian-mcp:
-    build: .
-    image: obsidian-mcp:latest
+    # Pull the published multi-arch image built by the GitHub Actions workflow
+    # on each v* tag. Pin to a version (e.g. :1.0.0) for reproducible deploys.
+    image: ghcr.io/stephenyctsedev/obsidianmcp:latest
+    # For local development against source instead of the registry image,
+    # comment out the `image:` line above and uncomment the next one:
+    # build: .
     container_name: obsidian-mcp
     restart: unless-stopped
     # Run as your Synology user so the container can read/write the vault and
