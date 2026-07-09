@@ -6,7 +6,13 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-const VAULT_ROOT = path.resolve(process.env.VAULT_PATH || "/vault");
+// VAULT_PATH is the mounted directory (which may hold several Obsidian vaults);
+// VAULT_NAME optionally selects one vault subfolder inside it (e.g. "Memory").
+// Leave VAULT_NAME empty to treat the mount itself as the vault root.
+const VAULT_ROOT = path.resolve(
+  process.env.VAULT_PATH || "/vault",
+  process.env.VAULT_NAME || ""
+);
 
 // Directories/files whose name begins with "." are hidden vault internals.
 function hasHiddenSegment(relPath) {

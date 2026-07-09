@@ -18,10 +18,14 @@ services:
     environment:
       PORT: "8787"
       VAULT_PATH: /vault
+      # Selects which vault subfolder inside the mount is the active vault.
+      # Leave blank to use the mount itself as the vault root.
+      VAULT_NAME: ${VAULT_NAME:-Memory}
       AUDIT_LOG_PATH: /data/audit.log
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
     volumes:
-      # Obsidian vault (read-write). Left side is the NAS-native path.
+      # Obsidian folder holding your vault(s). Left side is the NAS-native path.
+      # The active vault is VAULT_PATH + VAULT_NAME (e.g. /vault/Memory).
       - /volume1/homes/stephenyctse/obsidian:/vault
       # Persistent audit log directory.
       - ./data:/data

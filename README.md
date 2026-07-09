@@ -52,9 +52,13 @@ docker-compose pull && docker-compose up -d
 > source instead, comment out the `image:` line and uncomment `build: .`, then
 > run `docker-compose up -d --build`.
 
-The vault is bind-mounted read-write from `/volume1/homes/stephenyctse/obsidian`
-→ `/vault` (edit `docker-compose.yml` if your path differs). The audit log
-persists in `./data/audit.log` next to the compose file.
+The Obsidian folder is bind-mounted read-write from
+`/volume1/homes/stephenyctse/obsidian` → `/vault` (edit `docker-compose.yml` if
+your path differs). `VAULT_NAME` (in `.env`) selects which vault subfolder is
+served — the active vault root is `/vault/<VAULT_NAME>` (default `Memory`), so
+tool paths are relative to that vault (e.g. `Infra/NAS-Runbook.md`). Leave
+`VAULT_NAME` blank to serve the mount itself. The audit log persists in
+`./data/audit.log` next to the compose file.
 
 Quick checks:
 
