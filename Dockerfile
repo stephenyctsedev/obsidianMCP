@@ -11,7 +11,7 @@ COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 # App source.
-COPY server.js vault.js ./
+COPY server.js vault.js git.js ./
 
 # Mount points (bind-mounted at runtime via docker-compose).
 #   /vault  -> your Obsidian vault (read-write)

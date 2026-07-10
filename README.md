@@ -151,10 +151,11 @@ tail -f data/audit.log
 
 ## CI/CD — publish an image on a version tag
 
-`.github/workflows/docker-publish.yml` builds a **multi-arch** image
-(`linux/amd64` + `linux/arm64`) and pushes it to **GitHub Container Registry**
-whenever you push a `v*` tag. No secrets to configure — it uses the built-in
-`GITHUB_TOKEN`.
+`.github/workflows/docker-publish.yml` builds a **`linux/amd64`** image (for
+Synology Container Manager, which is x86-64) and pushes it to **GitHub
+Container Registry** whenever you push a `v*` tag. No secrets to configure — it
+uses the built-in `GITHUB_TOKEN`. (Add `linux/arm64` back to the `platforms:`
+line only if you deploy to an ARM host — it cross-builds under QEMU, slower.)
 
 Cut a release:
 
