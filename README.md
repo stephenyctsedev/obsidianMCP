@@ -53,7 +53,7 @@ Flow, when a client (e.g. claude.ai) adds this server as a connector:
 1. It fetches `/.well-known/oauth-protected-resource/mcp` to find the authorization server, then `/.well-known/oauth-authorization-server` for endpoint URLs.
 2. It self-registers via `POST /register` (no auth required — this is standard for dynamic client registration) and gets back a `client_id`.
 3. It opens `/authorize` in a browser. This server renders a small login page; type in `MCP_AUTH_TOKEN` to approve. On success it redirects back to the client with an authorization code.
-4. The client exchanges the code (+ PKCE verifier) at `POST /token` for an access token (1 hour) and a refresh token (rotated on each use, no fixed expiry).
+4. The client exchanges the code (+ PKCE verifier) at `POST /token` for an access token (1 hour) and a refresh token (rotated on each use, valid up to 90 days of inactivity).
 5. Every `/mcp` call after that sends `Authorization: Bearer <access_token>` — no more manual token pasting.
 
 Registered clients and issued tokens are persisted to `OAUTH_STORE_PATH` (default `/data/oauth-store.json`, next to the audit log) so a container restart doesn't force every connected client to re-authorize.
@@ -64,7 +64,7 @@ Non-interactive clients (Claude Code, curl, scripts) can skip all of this and se
 
 ## Security
 
-- **OAuth 2.1** for interactive clients (see [Auth](#auth)); access tokens expire in 1 hour, refresh tokens rotate on every use. `MCP_AUTH_TOKEN` gates the `/authorize` consent page and doubles as a static bearer token for non-interactive clients. Never hardcoded, never committed; password comparisons are constant-time.
+- **OAuth 2.1** for interactive clients (see [Auth](#auth)); access tokens expire in 1 hour, refresh tokens rotate on every use and expire after 90 days of inactivity. The `/authorize` consent page shows the client's redirect destination so you can spot a spoofed connector before approving. `MCP_AUTH_TOKEN` gates the consent page and doubles as a static bearer token for non-interactive clients. Never hardcoded, never committed; password comparisons are constant-time.
 - **Audit log** at `/data/audit.log` (bind-mounted, survives restarts). One JSON line per tool call: `ts, tool, path, status(success|failure), error?`. **Note content is never logged** — metadata only.
 - The OAuth endpoints are rate-limited (built into the SDK's auth handlers). The app runs with `trust proxy` enabled for the single DSM reverse-proxy hop in front of it, so rate limiting keys on the real client IP.
 

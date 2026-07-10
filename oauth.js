@@ -13,8 +13,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60; // 1 hour
+const REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days
 const AUTH_CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 function constantTimeEqual(a, b) {
@@ -78,6 +80,13 @@ class OAuthStore {
     for (const [token, data] of this.accessTokens) {
       if (data.expiresAt < nowSeconds) this.accessTokens.delete(token);
     }
+    for (const [token, data] of this.refreshTokens) {
+      // Older refresh tokens predate the expiresAt field; treat them as valid
+      // until they're rotated (undefined < nowSeconds is false).
+      if (data.expiresAt !== undefined && data.expiresAt < nowSeconds) {
+        this.refreshTokens.delete(token);
+      }
+    }
   }
 
   // Best-effort persistence: never let a write failure break a request.
@@ -125,6 +134,14 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
     const hidden = (name, value) =>
       value === undefined ? "" : `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
     const clientName = client.client_name || client.client_id;
+    // Show where the authorization code will actually be sent so the user can
+    // spot a spoofed client (open registration lets anyone pick client_name).
+    let redirectOrigin;
+    try {
+      redirectOrigin = new URL(params.redirectUri).origin;
+    } catch {
+      redirectOrigin = params.redirectUri;
+    }
     return `<!doctype html>
 <html>
 <head>
@@ -140,19 +157,22 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
   button { width: 100%; padding: 10px 12px; border-radius: 8px; border: none; background: #6a8dff; color: #0b0d10; font-weight: 600; font-size: 14px; cursor: pointer; }
   button:hover { background: #8aa4ff; }
   .error { color: #ff8080; font-size: 13px; margin: -8px 0 16px; }
+  .dest { font-size: 13px; color: #a8adb8; margin: 0 0 20px; padding: 10px 12px; border-radius: 8px; background: #16181d; border: 1px solid #3a3f4a; word-break: break-all; }
+  .dest strong { color: #e6e6e6; }
 </style>
 </head>
 <body>
   <form class="card" method="post">
     <h1>Authorize access</h1>
     <p><strong>${escapeHtml(clientName)}</strong> wants to read and write notes in your Obsidian vault.</p>
+    <div class="dest">After you authorize, the access code will be sent to:<br><strong>${escapeHtml(redirectOrigin)}</strong><br>Only continue if you recognize this destination.</div>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     ${hidden("client_id", client.client_id)}
     ${hidden("redirect_uri", params.redirectUri)}
     ${hidden("response_type", "code")}
     ${hidden("code_challenge", params.codeChallenge)}
     ${hidden("code_challenge_method", "S256")}
-    ${hidden("scope", (params.scopes || []).join(" "))}
+    ${hidden("scope", params.scopes?.length ? params.scopes.join(" ") : undefined)}
     ${hidden("state", params.state)}
     ${hidden("resource", params.resource ? params.resource.toString() : undefined)}
     <input type="password" name="password" placeholder="Password" autofocus autocomplete="current-password" required>
@@ -195,10 +215,10 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
       await loadPromise;
       const data = store.codes.get(authorizationCode);
       if (!data || data.expiresAt < Date.now()) {
-        throw new Error("Invalid or expired authorization code");
+        throw new InvalidGrantError("Invalid or expired authorization code");
       }
       if (data.clientId !== client.client_id) {
-        throw new Error("Authorization code was not issued to this client");
+        throw new InvalidGrantError("Authorization code was not issued to this client");
       }
       return data.codeChallenge;
     },
@@ -207,10 +227,10 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
       await loadPromise;
       const data = store.codes.get(authorizationCode);
       if (!data || data.expiresAt < Date.now()) {
-        throw new Error("Invalid or expired authorization code");
+        throw new InvalidGrantError("Invalid or expired authorization code");
       }
       if (data.clientId !== client.client_id) {
-        throw new Error("Authorization code was not issued to this client");
+        throw new InvalidGrantError("Authorization code was not issued to this client");
       }
       store.codes.delete(authorizationCode);
       return await issueTokens(client, data.scopes, data.resource);
@@ -220,10 +240,15 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
       await loadPromise;
       const data = store.refreshTokens.get(refreshToken);
       if (!data) {
-        throw new Error("Invalid refresh token");
+        throw new InvalidGrantError("Invalid refresh token");
+      }
+      if (data.expiresAt !== undefined && data.expiresAt < Date.now() / 1000) {
+        store.refreshTokens.delete(refreshToken);
+        await store.save();
+        throw new InvalidGrantError("Refresh token expired");
       }
       if (data.clientId !== client.client_id) {
-        throw new Error("Refresh token was not issued to this client");
+        throw new InvalidGrantError("Refresh token was not issued to this client");
       }
       store.refreshTokens.delete(refreshToken); // rotate on use
       return await issueTokens(client, scopes || data.scopes, data.resource);
@@ -234,7 +259,7 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
       const data = store.accessTokens.get(token);
       if (data) {
         if (data.expiresAt < Date.now() / 1000) {
-          throw new Error("Access token expired");
+          throw new InvalidTokenError("Access token expired");
         }
         return {
           token,
@@ -255,7 +280,7 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
           expiresAt: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60,
         };
       }
-      throw new Error("Invalid or expired token");
+      throw new InvalidTokenError("Invalid or expired token");
     },
 
     async revokeToken(_client, { token }) {
@@ -269,9 +294,19 @@ export function createOAuthProvider({ storePath, loginPassword, legacyToken }) {
   async function issueTokens(client, scopes, resource) {
     const accessToken = `mcp_at_${crypto.randomBytes(32).toString("hex")}`;
     const refreshToken = `mcp_rt_${crypto.randomBytes(32).toString("hex")}`;
-    const expiresAt = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECONDS;
-    store.accessTokens.set(accessToken, { clientId: client.client_id, scopes, resource, expiresAt });
-    store.refreshTokens.set(refreshToken, { clientId: client.client_id, scopes, resource });
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    store.accessTokens.set(accessToken, {
+      clientId: client.client_id,
+      scopes,
+      resource,
+      expiresAt: nowSeconds + ACCESS_TOKEN_TTL_SECONDS,
+    });
+    store.refreshTokens.set(refreshToken, {
+      clientId: client.client_id,
+      scopes,
+      resource,
+      expiresAt: nowSeconds + REFRESH_TOKEN_TTL_SECONDS,
+    });
     await store.save();
     return {
       access_token: accessToken,
