@@ -24,6 +24,7 @@ import {
   searchNotes,
   vaultRoot,
 } from "./vault.js";
+import { initGitRepo, startSnapshotTimer, commitPath } from "./git.js";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
@@ -121,6 +122,7 @@ function buildMcpServer() {
     },
     withAudit("write_note", async ({ path: p, content }) => {
       const written = await writeNote(p, content);
+      await commitPath(written, "write_note");
       return `Wrote ${content.length} chars to ${written}`;
     })
   );
@@ -138,6 +140,7 @@ function buildMcpServer() {
     },
     withAudit("append_note", async ({ path: p, content }) => {
       const appended = await appendNote(p, content);
+      await commitPath(appended, "append_note");
       return `Appended ${content.length} chars to ${appended}`;
     })
   );
@@ -154,6 +157,7 @@ function buildMcpServer() {
     },
     withAudit("delete_note", async ({ path: p }) => {
       const trashed = await deleteNote(p);
+      await commitPath(p, "delete_note");
       return `Moved ${p} to ${trashed}`;
     })
   );
@@ -244,6 +248,9 @@ const methodNotAllowed = (_req, res) =>
   });
 app.get("/mcp", requireAuth, methodNotAllowed);
 app.delete("/mcp", requireAuth, methodNotAllowed);
+
+await initGitRepo();
+startSnapshotTimer();
 
 createServer(app).listen(PORT, () => {
   console.log(`obsidian-mcp listening on :${PORT}`);

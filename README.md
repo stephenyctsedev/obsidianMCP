@@ -48,6 +48,21 @@ local files — use with care).
 - **Bearer token** via `MCP_AUTH_TOKEN` (env only — never hardcoded, never committed). Missing/mismatched header → `401`. Comparison is constant-time.
 - **Audit log** at `/data/audit.log` (bind-mounted, survives restarts). One JSON line per tool call: `ts, tool, path, status(success|failure), error?`. **Note content is never logged** — metadata only.
 
+## Version history (optional)
+
+Set `GIT_VERSIONING=true` to keep a **local** git history of the vault on the NAS. Two mechanisms, both best-effort (a git failure never breaks a tool call), all commits serialized:
+
+- **Per-file (A):** each `write_note` / `append_note` / `delete_note` commits the touched file — message `write_note: Infra/Foo.md @ 2026-07-08T14:03:12Z`.
+- **Snapshot (C):** every `GIT_SNAPSHOT_MINUTES` (0 = off) a whole-vault `git add -A` snapshot runs — this also captures edits made on your phone/PC. A baseline snapshot runs at startup.
+
+Notes:
+- **Never pushed anywhere** — history stays on the NAS. Your notes don't leave the box.
+- The `.git` folder lives inside the vault, but it's a **dot-folder**, so Remotely Save doesn't sync it to your devices and the MCP tools never expose it.
+- `.obsidian/`, `.trash/`, and other dot-folders are git-ignored automatically.
+- Browse history on the NAS: `git -C /volume1/homes/stephenyctse/obsidian/Memory log --oneline`, or `git -C … log -- Infra/Foo.md` for one note.
+
+Requires the image built with git (already in the Dockerfile). Defaults are **off**, so existing behavior is unchanged until you set the env vars.
+
 ## Setup & run (on the NAS)
 
 ```bash

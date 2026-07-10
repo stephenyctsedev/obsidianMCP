@@ -1,6 +1,9 @@
 # Obsidian MCP server — small, single-process Node image.
 FROM node:20-alpine
 
+# git is used for the optional local version-history feature.
+RUN apk add --no-cache git
+
 WORKDIR /app
 
 # Install production deps first for better layer caching.
@@ -18,7 +21,11 @@ RUN mkdir -p /vault /data
 ENV NODE_ENV=production \
     PORT=8787 \
     VAULT_PATH=/vault \
-    AUDIT_LOG_PATH=/data/audit.log
+    AUDIT_LOG_PATH=/data/audit.log \
+    GIT_VERSIONING=false \
+    GIT_AUTHOR_NAME=obsidian-mcp \
+    GIT_AUTHOR_EMAIL=obsidian-mcp@localhost \
+    GIT_SNAPSHOT_MINUTES=0
 
 EXPOSE 8787
 

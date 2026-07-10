@@ -23,6 +23,12 @@ services:
       VAULT_NAME: ${VAULT_NAME:-Memory}
       AUDIT_LOG_PATH: /data/audit.log
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+      # Optional LOCAL git version history of the vault (never pushed anywhere).
+      GIT_VERSIONING: ${GIT_VERSIONING:-false}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-obsidian-mcp}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-obsidian-mcp@localhost}
+      # Periodic whole-vault snapshot interval in minutes (0 = off).
+      GIT_SNAPSHOT_MINUTES: ${GIT_SNAPSHOT_MINUTES:-0}
     volumes:
       # Obsidian folder holding your vault(s). Left side is the NAS-native path.
       # The active vault is VAULT_PATH + VAULT_NAME (e.g. /vault/Memory).
