@@ -22,6 +22,12 @@ services:
       # Leave blank to use the mount itself as the vault root.
       VAULT_NAME: ${VAULT_NAME:-Memory}
       AUDIT_LOG_PATH: /data/audit.log
+      # Persisted OAuth client registrations + issued tokens, so a container
+      # restart doesn't force the claude.ai connector to re-authorize.
+      OAUTH_STORE_PATH: /data/oauth-store.json
+      # Public HTTPS URL this service is reachable at — OAuth issuer/resource
+      # identifier. Must match the DSM reverse-proxy hostname.
+      PUBLIC_URL: ${PUBLIC_URL}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
       # Optional LOCAL git version history of the vault (never pushed anywhere).
       GIT_VERSIONING: ${GIT_VERSIONING:-false}

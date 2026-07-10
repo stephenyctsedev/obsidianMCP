@@ -11,11 +11,11 @@ COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 # App source.
-COPY server.js vault.js git.js ./
+COPY server.js vault.js git.js oauth.js ./
 
 # Mount points (bind-mounted at runtime via docker-compose).
 #   /vault  -> your Obsidian vault (read-write)
-#   /data   -> persistent audit log
+#   /data   -> persistent audit log + OAuth client/token store
 RUN mkdir -p /vault /data
 
 ENV NODE_ENV=production \
