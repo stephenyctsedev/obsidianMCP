@@ -107,6 +107,27 @@ export async function appendNote(relPath, content) {
   return toVaultRelative(abs);
 }
 
+// delete_note(path) — move an existing note to .trash/ (recoverable), never a
+// hard delete. Preserves the note's subfolder under .trash and appends an
+// epoch-ms suffix so repeated deletes of the same name never collide.
+export async function deleteNote(relPath) {
+  const abs = resolveInVault(relPath); // validates: in-vault, non-dot, .md
+  try {
+    await fs.access(abs);
+  } catch {
+    throw new Error(`note does not exist: ${toVaultRelative(abs)}`);
+  }
+  const rel = toVaultRelative(abs); // e.g. inbox/note.md
+  const dir = path.posix.dirname(rel); // inbox  (or ".")
+  const base = path.posix.basename(rel, ".md"); // note
+  const stampedName = `${base}.${Date.now()}.md`; // note.1720449600000.md
+  const trashRelDir = dir === "." ? ".trash" : path.posix.join(".trash", dir);
+  const trashAbs = path.resolve(VAULT_ROOT, trashRelDir, stampedName);
+  await fs.mkdir(path.dirname(trashAbs), { recursive: true });
+  await fs.rename(abs, trashAbs);
+  return path.relative(VAULT_ROOT, trashAbs).split(path.sep).join("/");
+}
+
 // search_notes(query) — case-insensitive substring search across all .md files.
 // Returns [{ path, snippet }] with ~120 chars of context around the first hit.
 export async function searchNotes(query) {

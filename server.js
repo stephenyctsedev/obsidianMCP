@@ -20,6 +20,7 @@ import {
   readNote,
   writeNote,
   appendNote,
+  deleteNote,
   searchNotes,
   vaultRoot,
 } from "./vault.js";
@@ -138,6 +139,22 @@ function buildMcpServer() {
     withAudit("append_note", async ({ path: p, content }) => {
       const appended = await appendNote(p, content);
       return `Appended ${content.length} chars to ${appended}`;
+    })
+  );
+
+  server.registerTool(
+    "delete_note",
+    {
+      title: "Delete note",
+      description:
+        "Delete a note by moving it to the vault's .trash/ folder (recoverable, not a hard delete). Fails if the note does not exist.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note to delete."),
+      },
+    },
+    withAudit("delete_note", async ({ path: p }) => {
+      const trashed = await deleteNote(p);
+      return `Moved ${p} to ${trashed}`;
     })
   );
 

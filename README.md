@@ -12,12 +12,29 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `read_note` | `(path)` | Return the full content of a note. |
 | `write_note` | `(path, content)` | Create or overwrite a note (parent folders auto-created). |
 | `append_note` | `(path, content)` | Append to an **existing** note (fails if missing). |
+| `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
 | `search_notes` | `(query)` | Case-insensitive substring search; returns paths + snippets. |
 
 Any path or folder whose name starts with `.` (e.g. `.obsidian`, `.trash`) is
 refused — those internals are never listed, read, written, or searched.
 Paths are also confined to the vault root (no `../` escapes), and only `.md`
 files are accepted.
+
+### Deleting notes & Remotely Save
+
+`delete_note` never hard-deletes — it **moves** the note into the vault's
+`.trash/` folder (subfolder preserved, an epoch-ms suffix added to avoid
+collisions), so it's recoverable from File Station. Because `.trash` is a
+dot-folder, the deleted note immediately disappears from `list_notes`,
+`read_note`, and `search_notes`.
+
+⚠️ **Deletions may not propagate to your devices.** With Remotely Save in
+**Bidirectional (default)** mode, deletions are *not* synced (only the
+*"…And Delete"* modes propagate them). A device that still holds the note
+locally will **re-upload it** on its next sync, resurrecting it on the NAS. To
+make a deletion stick everywhere, also delete it on a device, or switch
+Remotely Save to an "…And Delete" mode (which then lets remote deletions wipe
+local files — use with care).
 
 ## Endpoints
 
