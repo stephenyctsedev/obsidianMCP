@@ -38,15 +38,35 @@ local files — use with care).
 
 ## Endpoints
 
-- `POST /mcp` — MCP Streamable HTTP endpoint. **Requires** `Authorization: Bearer <MCP_AUTH_TOKEN>`; anything else gets `401`.
+- `POST /mcp` — MCP Streamable HTTP endpoint. **Requires** an `Authorization: Bearer <token>` header — either an OAuth access token (see below) or `MCP_AUTH_TOKEN` directly; anything else gets `401`.
 - `GET /health` — unauthenticated, returns `{"status":"ok", ...}`.
+- OAuth endpoints — `/authorize`, `/token`, `/register`, `/revoke`, and the `/.well-known/oauth-authorization-server` + `/.well-known/oauth-protected-resource/mcp` discovery documents. See [Auth](#auth) below.
 
 **Internal port: `8787`.**
 
+## Auth
+
+The server implements a minimal **OAuth 2.1 authorization server** — the same flow the claude.ai custom-connector UI and Claude Desktop/mobile speak natively: metadata discovery, dynamic client registration (RFC 7591), authorization code + PKCE, and refresh tokens. There's exactly one "user" — whoever knows `MCP_AUTH_TOKEN` — so approving a client is just typing that password into a consent page; no separate accounts.
+
+Flow, when a client (e.g. claude.ai) adds this server as a connector:
+
+1. It fetches `/.well-known/oauth-protected-resource/mcp` to find the authorization server, then `/.well-known/oauth-authorization-server` for endpoint URLs.
+2. It self-registers via `POST /register` (no auth required — this is standard for dynamic client registration) and gets back a `client_id`.
+3. It opens `/authorize` in a browser. This server renders a small login page; type in `MCP_AUTH_TOKEN` to approve. On success it redirects back to the client with an authorization code.
+4. The client exchanges the code (+ PKCE verifier) at `POST /token` for an access token (1 hour) and a refresh token (rotated on each use, valid up to 90 days of inactivity).
+5. Every `/mcp` call after that sends `Authorization: Bearer <access_token>` — no more manual token pasting.
+
+Registered clients and issued tokens are persisted to `OAUTH_STORE_PATH` (default `/data/oauth-store.json`, next to the audit log) so a container restart doesn't force every connected client to re-authorize.
+
+Non-interactive clients (Claude Code, curl, scripts) can skip all of this and send `Authorization: Bearer <MCP_AUTH_TOKEN>` directly — `verifyAccessToken` accepts it as a long-lived legacy token alongside real OAuth access tokens.
+
+`PUBLIC_URL` (e.g. `https://obsidianmcp.sharecloud-me.synology.me`) must be set — it's used as the OAuth issuer and resource-server identifier, and must match the hostname clients actually reach the server at.
+
 ## Security
 
-- **Bearer token** via `MCP_AUTH_TOKEN` (env only — never hardcoded, never committed). Missing/mismatched header → `401`. Comparison is constant-time.
+- **OAuth 2.1** for interactive clients (see [Auth](#auth)); access tokens expire in 1 hour, refresh tokens rotate on every use and expire after 90 days of inactivity. The `/authorize` consent page shows the client's redirect destination so you can spot a spoofed connector before approving. `MCP_AUTH_TOKEN` gates the consent page and doubles as a static bearer token for non-interactive clients. Never hardcoded, never committed; password comparisons are constant-time.
 - **Audit log** at `/data/audit.log` (bind-mounted, survives restarts). One JSON line per tool call: `ts, tool, path, status(success|failure), error?`. **Note content is never logged** — metadata only.
+- The OAuth endpoints are rate-limited (built into the SDK's auth handlers). The app runs with `trust proxy` enabled for the single DSM reverse-proxy hop in front of it, so rate limiting keys on the real client IP.
 
 ## Version history (optional)
 
@@ -72,10 +92,14 @@ cp .env.example .env
 # 2. Generate a token and put it in .env as MCP_AUTH_TOKEN
 openssl rand -hex 32
 
-# 3. Confirm your Synology uid/gid own the vault, and set PUID/PGID in .env
+# 3. Set PUBLIC_URL in .env to the HTTPS hostname this service is reachable
+#    at (must match the DSM reverse-proxy rule below), e.g.:
+#    PUBLIC_URL=https://obsidianmcp.sharecloud-me.synology.me
+
+# 4. Confirm your Synology uid/gid own the vault, and set PUID/PGID in .env
 id stephenyctse        # -> uid=PUID gid=PGID
 
-# 4. Pull the published image and start
+# 5. Pull the published image and start
 docker-compose pull && docker-compose up -d
 ```
 
@@ -89,8 +113,8 @@ The Obsidian folder is bind-mounted read-write from
 your path differs). `VAULT_NAME` (in `.env`) selects which vault subfolder is
 served — the active vault root is `/vault/<VAULT_NAME>` (default `Memory`), so
 tool paths are relative to that vault (e.g. `Infra/NAS-Runbook.md`). Leave
-`VAULT_NAME` blank to serve the mount itself. The audit log persists in
-`./data/audit.log` next to the compose file.
+`VAULT_NAME` blank to serve the mount itself. The audit log and OAuth
+client/token store persist in `./data/` next to the compose file.
 
 Quick checks:
 
@@ -100,6 +124,9 @@ curl http://localhost:8787/health
 
 # 401 without a token:
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8787/mcp
+
+# OAuth discovery document (should return JSON, not an error):
+curl http://localhost:8787/.well-known/oauth-authorization-server
 ```
 
 ## DSM Reverse Proxy rule
@@ -125,21 +152,33 @@ Make sure the subdomain's TLS certificate covers `obsidianmcp.` (a wildcard for
 
 ## Add to Claude
 
-**Settings → Connectors → Add custom connector.** The claude.ai connector UI
-has no field for a custom `Authorization` header (only OAuth), so pass the token
-as a `?token=` query parameter in the URL and leave the OAuth fields blank:
+**Settings → Connectors → Add custom connector.** Just give it the `/mcp` URL —
+no token in the URL, no OAuth fields to fill in:
 
 ```
-https://obsidianmcp.sharecloud-me.synology.me/mcp?token=<MCP_AUTH_TOKEN>
+https://obsidianmcp.sharecloud-me.synology.me/mcp
 ```
 
-The server accepts the token **either** in the `Authorization: Bearer <token>`
-header **or** as `?token=<token>`. Header is preferred (e.g. from Claude Code,
-where you can set headers); the query form exists for the claude.ai UI.
+Claude discovers the OAuth endpoints automatically, self-registers as a
+client, and opens the `/authorize` login page in a browser — enter
+`MCP_AUTH_TOKEN` there once to approve it. After that, Claude holds a refresh
+token and re-authenticates silently; you won't see the login page again
+unless the connector is removed and re-added, or the token store is wiped.
 
-> Security note: with the query form the token ends up in the URL, so it can be
-> written to the NAS reverse-proxy access logs. Over HTTPS it is encrypted in
-> transit. Treat the full URL as a secret and rotate the token if it leaks.
+For **Claude Code** or scripts that set custom headers directly, skip OAuth
+entirely and send the token as a header:
+
+```
+Authorization: Bearer <MCP_AUTH_TOKEN>
+```
+
+> Security note: `MCP_AUTH_TOKEN` is the password for the `/authorize`
+> consent page as well as a standing bearer token — treat it like any other
+> credential (never in URLs, never committed) and rotate it if it leaks.
+> Rotating it immediately revokes the ability to approve *new* OAuth clients
+> and the legacy header path, but does **not** revoke already-issued OAuth
+> access/refresh tokens — restart the container (or delete `OAUTH_STORE_PATH`)
+> to invalidate those too.
 
 ## Update after a new release
 

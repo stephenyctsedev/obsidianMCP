@@ -1,7 +1,13 @@
 // server.js — Streamable HTTP MCP server exposing Obsidian vault tools.
 //
-//   POST /mcp     MCP Streamable HTTP endpoint (Bearer-token protected)
+//   POST /mcp     MCP Streamable HTTP endpoint (OAuth 2.1 bearer-token protected)
 //   GET  /health  Unauthenticated health check for DSM / uptime monitoring
+//
+// Authorization is a minimal single-user OAuth 2.1 server (see oauth.js):
+// dynamic client registration, authorization code + PKCE, refresh tokens —
+// the same flow claude.ai's custom-connector UI speaks natively. A static
+// `Authorization: Bearer <MCP_AUTH_TOKEN>` header still works too, for
+// non-interactive clients like Claude Code.
 //
 // Every tool call is written to an append-only audit log (metadata only,
 // never note content).
@@ -9,11 +15,12 @@
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
 import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 
 import {
   listNotes,
@@ -25,15 +32,35 @@ import {
   vaultRoot,
 } from "./vault.js";
 import { initGitRepo, startSnapshotTimer, commitPath } from "./git.js";
+import { createOAuthProvider } from "./oauth.js";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
 const AUDIT_LOG_PATH = process.env.AUDIT_LOG_PATH || "/data/audit.log";
+const OAUTH_STORE_PATH = process.env.OAUTH_STORE_PATH || "/data/oauth-store.json";
+const PUBLIC_URL = process.env.PUBLIC_URL || "";
 
 if (!AUTH_TOKEN) {
   console.error("FATAL: MCP_AUTH_TOKEN is not set. Refusing to start.");
   process.exit(1);
 }
+if (!PUBLIC_URL) {
+  console.error(
+    "FATAL: PUBLIC_URL is not set (e.g. https://obsidianmcp.sharecloud-me.synology.me). " +
+      "It's required as the OAuth issuer/resource URL. Refusing to start."
+  );
+  process.exit(1);
+}
+
+const issuerUrl = new URL(PUBLIC_URL);
+const resourceServerUrl = new URL("/mcp", PUBLIC_URL);
+const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
+
+const oauthProvider = createOAuthProvider({
+  storePath: OAUTH_STORE_PATH,
+  loginPassword: AUTH_TOKEN,
+  legacyToken: AUTH_TOKEN,
+});
 
 // --- Audit log -------------------------------------------------------------
 
@@ -185,6 +212,24 @@ function buildMcpServer() {
 // --- HTTP app --------------------------------------------------------------
 
 const app = express();
+
+// Behind the DSM reverse proxy (single trusted hop) — needed for correct
+// client IPs (X-Forwarded-For) in the OAuth endpoints' rate limiting.
+app.set("trust proxy", 1);
+
+// OAuth 2.1 authorization server + protected-resource metadata. Installs
+// /authorize, /token, /register, /revoke, and the /.well-known discovery
+// endpoints. Must be mounted at the app root — see oauth.js.
+app.use(
+  mcpAuthRouter({
+    provider: oauthProvider,
+    issuerUrl,
+    resourceServerUrl,
+    resourceName: "Obsidian Vault",
+    scopesSupported: ["mcp"],
+  })
+);
+
 app.use(express.json({ limit: "8mb" }));
 
 // Health check — intentionally unauthenticated.
@@ -192,27 +237,10 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", vault: vaultRoot });
 });
 
-// Bearer-token auth for the MCP endpoint (constant-time comparison).
-// Accepts the token either in the Authorization header (preferred) or as a
-// ?token= query parameter — the query form is for clients like the claude.ai
-// custom-connector UI, which has no field for a custom header.
-function requireAuth(req, res, next) {
-  const header = req.get("authorization") || "";
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  const queryToken = typeof req.query.token === "string" ? req.query.token : "";
-  const provided = (match ? match[1] : "") || queryToken;
-  const a = Buffer.from(provided);
-  const b = Buffer.from(AUTH_TOKEN);
-  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-  if (!ok) {
-    return res.status(401).json({
-      jsonrpc: "2.0",
-      error: { code: -32001, message: "Unauthorized" },
-      id: null,
-    });
-  }
-  next();
-}
+// Bearer-token auth for the MCP endpoint: accepts either an OAuth access
+// token issued via the /authorize + /token flow, or the static
+// MCP_AUTH_TOKEN as a legacy long-lived token (see oauth.js verifyAccessToken).
+const requireAuth = requireBearerAuth({ verifier: oauthProvider, resourceMetadataUrl });
 
 // Stateless Streamable HTTP: a fresh server + transport per request.
 app.post("/mcp", requireAuth, async (req, res) => {
