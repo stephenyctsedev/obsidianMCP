@@ -128,6 +128,49 @@ export async function deleteNote(relPath) {
   return path.relative(VAULT_ROOT, trashAbs).split(path.sep).join("/");
 }
 
+// replace_text(path, oldText, newText, replaceAll?) — targeted find-and-replace
+// within an EXISTING note. By default oldText must occur EXACTLY once (a 0-match
+// or an ambiguous multi-match errors out so the caller can supply more context);
+// set replaceAll to swap every occurrence. Matching is literal (not regex).
+// Returns { relPath, count } where count is the number of replacements made.
+export async function replaceText(relPath, oldText, newText, replaceAll = false) {
+  const abs = resolveInVault(relPath);
+  if (typeof oldText !== "string" || oldText === "") {
+    throw new Error("old_text must be a non-empty string");
+  }
+  if (typeof newText !== "string") {
+    throw new Error("new_text must be a string");
+  }
+  let text;
+  try {
+    text = await fs.readFile(abs, "utf8");
+  } catch {
+    throw new Error(`note does not exist: ${toVaultRelative(abs)} (use write_note to create it)`);
+  }
+
+  // Count occurrences without regex (oldText is literal, may contain metachars).
+  let count = 0;
+  for (let i = text.indexOf(oldText); i !== -1; i = text.indexOf(oldText, i + oldText.length)) {
+    count++;
+  }
+
+  if (count === 0) {
+    throw new Error(`old_text not found in ${toVaultRelative(abs)}`);
+  }
+  if (count > 1 && !replaceAll) {
+    throw new Error(
+      `old_text occurs ${count} times in ${toVaultRelative(abs)}; ` +
+        `supply more surrounding context to match a single spot, or set replace_all=true`
+    );
+  }
+
+  const updated = replaceAll
+    ? text.split(oldText).join(newText)
+    : text.replace(oldText, newText); // safe: literal string replaces first only
+  await fs.writeFile(abs, updated, "utf8");
+  return { relPath: toVaultRelative(abs), count: replaceAll ? count : 1 };
+}
+
 // search_notes(query) — case-insensitive substring search across all .md files.
 // Returns [{ path, snippet }] with ~120 chars of context around the first hit.
 export async function searchNotes(query) {

@@ -12,6 +12,7 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `read_note` | `(path)` | Return the full content of a note. |
 | `write_note` | `(path, content)` | Create or overwrite a note (parent folders auto-created). |
 | `append_note` | `(path, content)` | Append to an **existing** note (fails if missing). |
+| `replace_text` | `(path, old_text, new_text, replace_all?)` | Literal find-and-replace within an **existing** note. `old_text` must match exactly once unless `replace_all` is set; fails if missing or not found. |
 | `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
 | `search_notes` | `(query)` | Case-insensitive substring search; returns paths + snippets. |
 
@@ -72,7 +73,7 @@ Non-interactive clients (Claude Code, curl, scripts) can skip all of this and se
 
 Set `GIT_VERSIONING=true` to keep a **local** git history of the vault on the NAS. Two mechanisms, both best-effort (a git failure never breaks a tool call), all commits serialized:
 
-- **Per-file (A):** each `write_note` / `append_note` / `delete_note` commits the touched file — message `write_note: Infra/Foo.md @ 2026-07-08T14:03:12Z`.
+- **Per-file (A):** each `write_note` / `append_note` / `replace_text` / `delete_note` commits the touched file — message `write_note: Infra/Foo.md @ 2026-07-08T14:03:12Z`.
 - **Snapshot (C):** every `GIT_SNAPSHOT_MINUTES` (0 = off) a whole-vault `git add -A` snapshot runs — this also captures edits made on your phone/PC. A baseline snapshot runs at startup.
 
 Notes:
