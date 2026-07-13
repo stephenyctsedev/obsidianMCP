@@ -60,7 +60,7 @@ Registered clients and issued tokens are persisted to `OAUTH_STORE_PATH` (defaul
 
 Non-interactive clients (Claude Code, curl, scripts) can skip all of this and send `Authorization: Bearer <MCP_AUTH_TOKEN>` directly — `verifyAccessToken` accepts it as a long-lived legacy token alongside real OAuth access tokens.
 
-`PUBLIC_URL` (e.g. `https://obsidianmcp.sharecloud-me.synology.me`) must be set — it's used as the OAuth issuer and resource-server identifier, and must match the hostname clients actually reach the server at.
+`PUBLIC_URL` (e.g. `https://obsidianmcp.your-domain.example.com`) must be set — it's used as the OAuth issuer and resource-server identifier, and must match the hostname clients actually reach the server at.
 
 ## Security
 
@@ -79,7 +79,7 @@ Notes:
 - **Never pushed anywhere** — history stays on the NAS. Your notes don't leave the box.
 - The `.git` folder lives inside the vault, but it's a **dot-folder**, so Remotely Save doesn't sync it to your devices and the MCP tools never expose it.
 - `.obsidian/`, `.trash/`, and other dot-folders are git-ignored automatically.
-- Browse history on the NAS: `git -C /volume1/homes/stephenyctse/obsidian/Memory log --oneline`, or `git -C … log -- Infra/Foo.md` for one note.
+- Browse history on the NAS: `git -C /volume1/homes/youruser/obsidian/Memory log --oneline`, or `git -C … log -- Infra/Foo.md` for one note.
 
 Requires the image built with git (already in the Dockerfile). Defaults are **off**, so existing behavior is unchanged until you set the env vars.
 
@@ -94,10 +94,10 @@ openssl rand -hex 32
 
 # 3. Set PUBLIC_URL in .env to the HTTPS hostname this service is reachable
 #    at (must match the DSM reverse-proxy rule below), e.g.:
-#    PUBLIC_URL=https://obsidianmcp.sharecloud-me.synology.me
+#    PUBLIC_URL=https://obsidianmcp.your-domain.example.com
 
 # 4. Confirm your Synology uid/gid own the vault, and set PUID/PGID in .env
-id stephenyctse        # -> uid=PUID gid=PGID
+id youruser        # -> uid=PUID gid=PGID
 
 # 5. Pull the published image and start
 docker-compose pull && docker-compose up -d
@@ -109,7 +109,7 @@ docker-compose pull && docker-compose up -d
 > run `docker-compose up -d --build`.
 
 The Obsidian folder is bind-mounted read-write from
-`/volume1/homes/stephenyctse/obsidian` → `/vault` (edit `docker-compose.yml` if
+`/volume1/homes/youruser/obsidian` → `/vault` (edit `docker-compose.yml` if
 your path differs). `VAULT_NAME` (in `.env`) selects which vault subfolder is
 served — the active vault root is `/vault/<VAULT_NAME>` (default `Memory`), so
 tool paths are relative to that vault (e.g. `Infra/NAS-Runbook.md`). Leave
@@ -136,15 +136,15 @@ Control Panel → **Login Portal → Advanced → Reverse Proxy → Create**:
 | Field | Value |
 |-------|-------|
 | Source protocol | HTTPS |
-| Source hostname | `obsidianmcp.sharecloud-me.synology.me` |
+| Source hostname | `obsidianmcp.your-domain.example.com` |
 | Source port | `443` |
 | Destination protocol | HTTP |
 | Destination hostname | `localhost` |
 | Destination port | `8787` |
 
-Result: `https://obsidianmcp.sharecloud-me.synology.me` → `http://localhost:8787`.
+Result: `https://obsidianmcp.your-domain.example.com` → `http://localhost:8787`.
 Make sure the subdomain's TLS certificate covers `obsidianmcp.` (a wildcard for
-`*.sharecloud-me.synology.me`, or add it to the cert's SAN list).
+`*.your-domain.example.com`, or add it to the cert's SAN list).
 
 > Tip: on the **Custom Header** tab of the reverse-proxy rule, enable
 > **WebSocket** header pass-through — harmless for HTTP and useful if a client
@@ -156,7 +156,7 @@ Make sure the subdomain's TLS certificate covers `obsidianmcp.` (a wildcard for
 no token in the URL, no OAuth fields to fill in:
 
 ```
-https://obsidianmcp.sharecloud-me.synology.me/mcp
+https://obsidianmcp.your-domain.example.com/mcp
 ```
 
 Claude discovers the OAuth endpoints automatically, self-registers as a
