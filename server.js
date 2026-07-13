@@ -46,7 +46,7 @@ if (!AUTH_TOKEN) {
 }
 if (!PUBLIC_URL) {
   console.error(
-    "FATAL: PUBLIC_URL is not set (e.g. https://obsidianmcp.sharecloud-me.synology.me). " +
+    "FATAL: PUBLIC_URL is not set (e.g. https://obsidianmcp.your-domain.example.com). " +
       "It's required as the OAuth issuer/resource URL. Refusing to start."
   );
   process.exit(1);

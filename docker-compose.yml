@@ -10,7 +10,7 @@ services:
     restart: unless-stopped
     # Run as your Synology user so the container can read/write the vault and
     # audit log on the bind-mounted host folders. Find the values with:
-    #   ssh into DSM, then `id stephenyctse`  ->  uid=PUID gid=PGID
+    #   ssh into DSM, then `id youruser`  ->  uid=PUID gid=PGID
     user: "${PUID:-1026}:${PGID:-100}"
     ports:
       # host:container — reverse-proxy obsidianmcp. -> http://localhost:8787
@@ -38,6 +38,6 @@ services:
     volumes:
       # Obsidian folder holding your vault(s). Left side is the NAS-native path.
       # The active vault is VAULT_PATH + VAULT_NAME (e.g. /vault/Memory).
-      - /volume1/homes/stephenyctse/obsidian:/vault
+      - /volume1/homes/youruser/obsidian:/vault
       # Persistent audit log directory.
       - ./data:/data
