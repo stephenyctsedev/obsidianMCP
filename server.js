@@ -27,6 +27,7 @@ import {
   readNote,
   writeNote,
   appendNote,
+  replaceText,
   deleteNote,
   searchNotes,
   vaultRoot,
@@ -169,6 +170,31 @@ function buildMcpServer() {
       const appended = await appendNote(p, content);
       await commitPath(appended, "append_note");
       return `Appended ${content.length} chars to ${appended}`;
+    })
+  );
+
+  server.registerTool(
+    "replace_text",
+    {
+      title: "Replace text in note",
+      description:
+        "Find-and-replace literal text within an existing note. By default old_text must occur exactly once (0 matches or an ambiguous match errors out — supply more surrounding context); set replace_all to swap every occurrence. Matching is literal, not regex. Fails if the note does not exist.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to an existing .md note."),
+        old_text: z
+          .string()
+          .describe("Exact text to find. Include enough context to match a single spot."),
+        new_text: z.string().describe("Text to replace it with (may be empty to delete)."),
+        replace_all: z
+          .boolean()
+          .optional()
+          .describe("Replace every occurrence instead of requiring a unique match (default false)."),
+      },
+    },
+    withAudit("replace_text", async ({ path: p, old_text, new_text, replace_all }) => {
+      const { relPath, count } = await replaceText(p, old_text, new_text, replace_all ?? false);
+      await commitPath(relPath, "replace_text");
+      return `Replaced ${count} occurrence${count === 1 ? "" : "s"} in ${relPath}`;
     })
   );
 
