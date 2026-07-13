@@ -199,4 +199,13 @@ export async function searchNotes(query) {
   return results;
 }
 
+// Validate a caller-supplied path the same way the read/write tools do (in-vault,
+// no dot-segments, must be .md) and return it normalized to a vault-relative,
+// forward-slash form suitable for `git` pathspecs. Throws on any violation.
+// Exists so git.js can sanitize a path BEFORE handing it to a git subprocess.
+export function assertVaultPath(relPath) {
+  const abs = resolveInVault(relPath); // throws on traversal / dot / non-.md
+  return toVaultRelative(abs);
+}
+
 export const vaultRoot = VAULT_ROOT;

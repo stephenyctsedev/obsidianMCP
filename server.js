@@ -32,7 +32,13 @@ import {
   searchNotes,
   vaultRoot,
 } from "./vault.js";
-import { initGitRepo, startSnapshotTimer, commitPath } from "./git.js";
+import {
+  initGitRepo,
+  startSnapshotTimer,
+  commitPath,
+  noteHistory,
+  showNoteAtRef,
+} from "./git.js";
 import { createOAuthProvider } from "./oauth.js";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
@@ -229,6 +235,52 @@ function buildMcpServer() {
       const hits = await searchNotes(query);
       if (!hits.length) return `No matches for "${query}".`;
       return hits.map((h) => `${h.path}\n  ${h.snippet}`).join("\n\n");
+    })
+  );
+
+  server.registerTool(
+    "note_history",
+    {
+      title: "Note history",
+      description:
+        "List the git version history for a single note, newest first. Returns each version's commit hash, timestamp, and action. Requires git versioning to be enabled on the server. Use the returned hash with restore_note to roll back.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Max number of versions to return (default 10, max 100)."),
+      },
+    },
+    withAudit("note_history", async ({ path: p, limit }) => {
+      const history = await noteHistory(p, limit ?? 10);
+      if (!history.length) return `No version history found for ${p}.`;
+      return history
+        .map((h) => `${h.shortHash}  ${h.date}  ${h.subject}`)
+        .join("\n");
+    })
+  );
+
+  server.registerTool(
+    "restore_note",
+    {
+      title: "Restore note version",
+      description:
+        "Restore a note to an earlier version from git history. Fetches the note's content as it existed at the given commit hash (from note_history) and writes it back as a NEW version — the intervening history is preserved, never discarded. Requires git versioning to be enabled on the server.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note to restore."),
+        ref: z
+          .string()
+          .describe("Commit hash of the version to restore (from note_history)."),
+      },
+    },
+    withAudit("restore_note", async ({ path: p, ref }) => {
+      const content = await showNoteAtRef(p, ref); // validates path + ref, no mutation
+      const written = await writeNote(p, content); // validates again, then overwrites
+      await commitPath(written, `restore_note (from ${ref.slice(0, 8)})`);
+      return `Restored ${written} to its version at ${ref.slice(0, 8)} (${content.length} chars).`;
     })
   );
 
