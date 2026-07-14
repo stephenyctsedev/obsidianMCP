@@ -16,6 +16,7 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
 | `search_notes` | `(query)` | Case-insensitive substring search; returns paths + snippets. |
 | `note_history` | `(path, limit?)` | List a note's git version history (newest first): commit hash, timestamp, action. Requires `GIT_VERSIONING`. |
+| `note_diff` | `(path, ref, against?)` | Unified diff (with a stat summary) for a note. `ref` alone = what that one commit changed; `against` = another hash to compare two versions, or `"now"` to compare against the current note. Large diffs are truncated. Requires `GIT_VERSIONING`. |
 | `restore_note` | `(path, ref)` | Restore a note to an earlier version (`ref` = hash from `note_history`), written back as a **new** version so history is preserved. Requires `GIT_VERSIONING`. |
 
 Any path or folder whose name starts with `.` (e.g. `.obsidian`, `.trash`) is
@@ -78,12 +79,13 @@ Set `GIT_VERSIONING=true` to keep a **local** git history of the vault on the NA
 - **Per-file (A):** each `write_note` / `append_note` / `replace_text` / `delete_note` commits the touched file — message `write_note: Infra/Foo.md @ 2026-07-08T14:03:12Z`.
 - **Snapshot (C):** every `GIT_SNAPSHOT_MINUTES` (0 = off) a whole-vault `git add -A` snapshot runs — this also captures edits made on your phone/PC. A baseline snapshot runs at startup.
 
-With versioning on, two read/restore tools become useful:
+With versioning on, three read/restore tools become useful:
 
 - **`note_history(path, limit?)`** returns a note's commits newest-first (`--follow`, so renames are tracked), each as `shortHash  timestamp  action`.
-- **`restore_note(path, ref)`** fetches the note's content at `ref` (a hash from `note_history`) and writes it back as a **new** commit — like `delete_note`'s `.trash` approach, it's non-destructive: nothing in between is discarded, so you can also "un-restore". It never does a `git reset`/`checkout` on the working tree. When `GIT_VERSIONING` is off, both tools return a clear "git versioning is disabled" error.
+- **`note_diff(path, ref, against?)`** shows a unified diff with a `--stat` summary. With just `ref` it shows what that one commit changed (`git show`); set `against` to another hash to compare two versions, or to `"now"` to compare that version against the current note. `ref` is always the older/base side, and large diffs are truncated so they never flood the model's context.
+- **`restore_note(path, ref)`** fetches the note's content at `ref` (a hash from `note_history`) and writes it back as a **new** commit — like `delete_note`'s `.trash` approach, it's non-destructive: nothing in between is discarded, so you can also "un-restore". It never does a `git reset`/`checkout` on the working tree.
 
-(A `diffNoteAtRef` helper exists in `git.js` but is intentionally **not** registered as a tool — enable it there if you want unified diffs later.)
+When `GIT_VERSIONING` is off, all three return a clear "git versioning is disabled" error.
 
 Notes:
 - **Never pushed anywhere** — history stays on the NAS. Your notes don't leave the box.
