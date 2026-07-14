@@ -38,6 +38,7 @@ import {
   commitPath,
   noteHistory,
   showNoteAtRef,
+  noteDiff,
 } from "./git.js";
 import { createOAuthProvider } from "./oauth.js";
 
@@ -260,6 +261,30 @@ function buildMcpServer() {
       return history
         .map((h) => `${h.shortHash}  ${h.date}  ${h.subject}`)
         .join("\n");
+    })
+  );
+
+  server.registerTool(
+    "note_diff",
+    {
+      title: "Diff note version",
+      description:
+        "Show what changed to a note as a unified diff, with a stat summary. With only `ref`, shows what that single commit (hash from note_history) changed. Set `against` to another commit hash to compare two versions, or to \"now\" to compare that version against the current note. `ref` is always the older/base side. Large diffs are truncated. Requires git versioning to be enabled on the server.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note."),
+        ref: z
+          .string()
+          .describe("Base commit hash to diff from (from note_history)."),
+        against: z
+          .string()
+          .optional()
+          .describe(
+            'What to diff against: omit to see only what `ref` itself changed; another commit hash to compare two versions; or "now" to compare `ref` against the current note.'
+          ),
+      },
+    },
+    withAudit("note_diff", async ({ path: p, ref, against }) => {
+      return await noteDiff(p, ref, against);
     })
   );
 

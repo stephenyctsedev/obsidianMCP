@@ -4,8 +4,9 @@
 //
 //   A) commitPath()  — per-file commit after each write/append/delete tool call
 //   C) snapshotAll()  — periodic whole-vault snapshot (captures device edits too)
-//   D) noteHistory() / showNoteAtRef() — read-only history + old-version lookup
-//      powering the note_history and restore_note tools
+//   D) noteHistory() / showNoteAtRef() / noteDiff() — read-only history,
+//      old-version lookup, and per-commit/version diffs powering the
+//      note_history, restore_note, and note_diff tools
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -131,14 +132,35 @@ export async function noteHistory(relPath, limit = 10) {
     });
 }
 
+// Guard a caller-supplied ref: allow only characters valid in a hash or ref
+// name, so it can never be misread as a flag or injected into the git argv.
+function assertRef(ref, label = "ref") {
+  if (typeof ref !== "string" || !/^[0-9a-zA-Z._/-]+$/.test(ref)) {
+    throw new Error(`${label} must be a valid git commit hash or ref name`);
+  }
+}
+
+// Cap a diff so a huge change can't flood the model's context. Keeps the stat
+// summary + the first MAX_DIFF_LINES patch lines, then points at other tools.
+const MAX_DIFF_LINES = 500;
+function truncateDiff(text) {
+  const lines = text.split("\n");
+  if (lines.length <= MAX_DIFF_LINES) return text.trimEnd();
+  const kept = lines.slice(0, MAX_DIFF_LINES).join("\n").trimEnd();
+  const omitted = lines.length - MAX_DIFF_LINES;
+  return (
+    kept +
+    `\n\n… diff truncated: ${omitted} more line${omitted === 1 ? "" : "s"}. ` +
+    `Use read_note for the current full text, or restore_note to roll back.`
+  );
+}
+
 // Return the content of a note as it existed at a given commit ref, without
 // touching the working tree. Throws if the ref or path didn't exist there.
 export async function showNoteAtRef(relPath, ref) {
   assertGitEnabled();
   const safe = assertVaultPath(relPath); // validate BEFORE handing path to git
-  if (typeof ref !== "string" || !/^[0-9a-zA-Z._/-]+$/.test(ref)) {
-    throw new Error("ref must be a valid git commit hash or ref name");
-  }
+  assertRef(ref);
   try {
     return await git(["show", `${ref}:${safe}`]);
   } catch (err) {
@@ -146,16 +168,42 @@ export async function showNoteAtRef(relPath, ref) {
   }
 }
 
-// Hook for a future diff tool: unified diff of a note between an old ref and the
-// current working tree. Wired up but intentionally NOT registered as an MCP tool
-// yet (see README) — export kept so enabling it later is a one-line change.
-export async function diffNoteAtRef(relPath, ref) {
+// Unified diff of a single note, in one of three modes:
+//   against omitted        → what commit `ref` itself changed (git show)
+//   against === "now"      → from `ref` to the current working tree (git diff)
+//   against is another ref → between the two versions `ref` → `against`
+// `ref` is always the older/base side. Each result carries a --stat summary
+// ahead of the patch and is length-capped by truncateDiff().
+export async function noteDiff(relPath, ref, against) {
   assertGitEnabled();
-  const safe = assertVaultPath(relPath);
-  if (typeof ref !== "string" || !/^[0-9a-zA-Z._/-]+$/.test(ref)) {
-    throw new Error("ref must be a valid git commit hash or ref name");
+  const safe = assertVaultPath(relPath); // validate BEFORE handing path to git
+  assertRef(ref);
+
+  let args;
+  let scope;
+  if (against == null || against === "") {
+    // A single commit's change to this note. --format prints a compact header
+    // (short hash, ISO date, subject) that plain `git diff` wouldn't give us.
+    args = ["show", "--no-color", "--stat", "--patch",
+            "--format=commit %h  %cI%n%s", ref, "--", safe];
+    scope = `commit ${ref}`;
+  } else if (against === "now" || against === "working") {
+    args = ["diff", "--no-color", "--stat", "--patch", ref, "--", safe];
+    scope = `${ref} → working tree`;
+  } else {
+    assertRef(against, "against");
+    args = ["diff", "--no-color", "--stat", "--patch", ref, against, "--", safe];
+    scope = `${ref} → ${against}`;
   }
-  return await git(["diff", ref, "--", safe]);
+
+  let raw;
+  try {
+    raw = await git(args);
+  } catch (err) {
+    throw new Error(`could not diff ${safe} (${scope}): ${err.message}`);
+  }
+  if (!raw.trim()) return `No changes to ${safe} (${scope}).`;
+  return truncateDiff(raw);
 }
 
 // Start the periodic snapshot timer (C). Runs an immediate baseline first.
