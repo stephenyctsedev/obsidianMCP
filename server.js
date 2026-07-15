@@ -31,6 +31,8 @@ import {
   deleteNote,
   moveNote,
   searchNotes,
+  getFrontmatter,
+  updateFrontmatter,
   vaultRoot,
 } from "./vault.js";
 import {
@@ -256,6 +258,50 @@ function buildMcpServer() {
       const hits = await searchNotes(query);
       if (!hits.length) return `No matches for "${query}".`;
       return hits.map((h) => `${h.path}\n  ${h.snippet}`).join("\n\n");
+    })
+  );
+
+  server.registerTool(
+    "get_frontmatter",
+    {
+      title: "Get frontmatter",
+      description:
+        "Return a note's parsed YAML frontmatter as JSON, or null if the note has no frontmatter block.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note."),
+      },
+    },
+    withAudit("get_frontmatter", async ({ path: p }) => {
+      const fm = await getFrontmatter(p);
+      return JSON.stringify(fm, null, 2);
+    })
+  );
+
+  server.registerTool(
+    "update_frontmatter",
+    {
+      title: "Update frontmatter",
+      description:
+        "Set or remove a single top-level key in a note's YAML frontmatter. Pass value as a JSON value to set it, or null to remove the key. Creates the frontmatter block if missing; removes it when the last key is removed. The note body is left untouched, but YAML formatting/comments inside the frontmatter are normalized.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note."),
+        key: z.string().describe("Top-level frontmatter key to set or remove."),
+        value: z
+          .union([
+            z.string(),
+            z.number(),
+            z.boolean(),
+            z.array(z.any()),
+            z.record(z.any()),
+            z.null(),
+          ])
+          .describe("New value (JSON). Pass null to remove the key."),
+      },
+    },
+    withAudit("update_frontmatter", async ({ path: p, key, value }) => {
+      const { relPath, action } = await updateFrontmatter(p, key, value);
+      await commitPath(relPath, "update_frontmatter");
+      return `${action === "removed" ? "Removed" : "Set"} frontmatter key "${key}" in ${relPath}`;
     })
   );
 

@@ -5,6 +5,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 // VAULT_PATH is the mounted directory (which may hold several Obsidian vaults);
 // VAULT_NAME optionally selects one vault subfolder inside it (e.g. "Memory").
@@ -236,6 +237,142 @@ export async function searchNotes(query) {
     results.push({ path: toVaultRelative(file), snippet });
   }
   return results;
+}
+
+// Split a note into { frontmatter: string|null, body: string }. A frontmatter
+// block is a leading "---\n...\n---\n" fence at the very start of the file.
+// Rules: the file must START with `---` on its own first line (allow `---\r\n` too);
+// the closing fence is the next line that is exactly `---` (or `---\r`). If there is
+// no valid opening+closing fence, return { frontmatter: null, body: text }. `frontmatter`
+// is the raw YAML text between the fences (no fences included); `body` is everything
+// after the closing fence line (including any leading newline handling).
+function splitFrontmatter(text) {
+  // Check if file starts with ---
+  if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) {
+    return { frontmatter: null, body: text };
+  }
+
+  // Determine the opening fence line ending (either \r\n or \n)
+  const hasOpeningCRLF = text.startsWith("---\r\n");
+  const openingLineEnd = hasOpeningCRLF ? 5 : 4; // position after "---\n" or "---\r\n"
+
+  // Search for closing fence: a line that is exactly "---" (possibly with \r)
+  let closingIdx = -1;
+  let pos = openingLineEnd;
+
+  while (pos < text.length) {
+    // Find the next newline
+    const nextNewline = text.indexOf("\n", pos);
+    if (nextNewline === -1) {
+      // No more newlines, closing fence not found
+      break;
+    }
+
+    // Extract the line (without the newline, but possibly including \r)
+    let line = text.slice(pos, nextNewline);
+    if (line.endsWith("\r")) {
+      line = line.slice(0, -1);
+    }
+
+    // Check if this line is exactly ---
+    if (line === "---") {
+      // We found the closing fence
+      closingIdx = nextNewline; // position of the \n after the closing ---
+      break;
+    }
+
+    // Move to the next line
+    pos = nextNewline + 1;
+  }
+
+  if (closingIdx === -1) {
+    // No closing fence found
+    return { frontmatter: null, body: text };
+  }
+
+  // Extract frontmatter (between opening and closing fences, no fences)
+  const frontmatter = text.slice(openingLineEnd, pos);
+
+  // Extract body (everything after the closing fence's newline)
+  const bodyStart = closingIdx + 1;
+  const body = text.slice(bodyStart);
+
+  return { frontmatter, body };
+}
+
+// get_frontmatter(path) — parsed YAML frontmatter of a note, or null if none.
+export async function getFrontmatter(relPath) {
+  const abs = resolveInVault(relPath);
+  let text;
+  try {
+    text = await fs.readFile(abs, "utf8");
+  } catch {
+    throw new Error(`note does not exist: ${toVaultRelative(abs)}`);
+  }
+
+  const { frontmatter } = splitFrontmatter(text);
+  if (frontmatter === null) return null;
+
+  try {
+    return parseYaml(frontmatter);
+  } catch (err) {
+    throw new Error(`invalid YAML frontmatter in ${toVaultRelative(abs)}: ${err.message}`);
+  }
+}
+
+// update_frontmatter(path, key, value) — set or remove ONE top-level key.
+// value is null to delete; otherwise it's a JSON value.
+export async function updateFrontmatter(relPath, key, value) {
+  if (typeof key !== "string" || key.trim() === "") {
+    throw new Error("key must be a non-empty string");
+  }
+
+  const abs = resolveInVault(relPath);
+  let text;
+  try {
+    text = await fs.readFile(abs, "utf8");
+  } catch {
+    throw new Error(`note does not exist: ${toVaultRelative(abs)}`);
+  }
+
+  const { frontmatter, body } = splitFrontmatter(text);
+
+  // Parse existing frontmatter or default to empty object
+  let data;
+  if (frontmatter === null) {
+    data = {};
+  } else {
+    try {
+      data = parseYaml(frontmatter);
+    } catch (err) {
+      throw new Error(`invalid YAML frontmatter in ${toVaultRelative(abs)}: ${err.message}`);
+    }
+    if (typeof data !== "object" || data === null || Array.isArray(data)) {
+      throw new Error(
+        `frontmatter is not a YAML mapping in ${toVaultRelative(abs)}`
+      );
+    }
+  }
+
+  // Update the key
+  if (value === null) {
+    delete data[key];
+  } else {
+    data[key] = value;
+  }
+
+  // Re-serialize: if the resulting object has no keys, write body without frontmatter block;
+  // otherwise write ---\n${stringifyYaml(data)}---\n + body.
+  // Note: stringifyYaml output ends with a trailing newline already, hence ---\n directly after it.
+  let newText;
+  if (Object.keys(data).length === 0) {
+    newText = body;
+  } else {
+    newText = `---\n${stringifyYaml(data)}---\n${body}`;
+  }
+
+  await fs.writeFile(abs, newText, "utf8");
+  return { relPath: toVaultRelative(abs), action: value === null ? "removed" : "set" };
 }
 
 // Validate a caller-supplied path the same way the read/write tools do (in-vault,
