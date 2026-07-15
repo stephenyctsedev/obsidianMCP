@@ -69,6 +69,46 @@ function toVaultRelative(abs) {
   return path.relative(VAULT_ROOT, abs).split(path.sep).join("/");
 }
 
+// Resolve a caller-supplied path that must live INSIDE .trash/. Unlike
+// resolveInVault, the leading ".trash" segment is allowed — but only that one;
+// every other segment must still be non-hidden, and the path must stay inside
+// the vault and end in .md.
+function resolveInTrash(relPath) {
+  if (typeof relPath !== "string" || relPath.trim() === "") {
+    throw new Error("path must be a non-empty string");
+  }
+  const normalized = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const segments = normalized.split("/");
+
+  // First segment must be exactly .trash
+  if (segments.length === 0 || segments[0] !== ".trash") {
+    throw new Error("path must start with .trash/");
+  }
+
+  // Every segment after .trash must be non-hidden
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.length > 0 && seg.startsWith(".")) {
+      throw new Error("access to dot-prefixed (hidden) paths is not allowed");
+    }
+  }
+
+  // Must end in .md
+  if (!normalized.toLowerCase().endsWith(".md")) {
+    throw new Error("path must point to a .md file");
+  }
+
+  // Resolve against vault root and verify it stays inside .trash
+  const abs = path.resolve(VAULT_ROOT, normalized);
+  const trashDirAbs = path.resolve(VAULT_ROOT, ".trash");
+  const rel = path.relative(trashDirAbs, abs);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error("path escapes the vault root");
+  }
+
+  return abs;
+}
+
 // list_notes(folder?) — return relative paths of every .md file, optionally
 // restricted to a subfolder.
 export async function listNotes(folder) {
@@ -166,6 +206,140 @@ export async function moveNote(fromRel, toRel) {
   await fs.rename(fromAbs, toAbs);
 
   return { from: toVaultRelative(fromAbs), to: toVaultRelative(toAbs) };
+}
+
+// Recursively walk .trash directory collecting .md files with timestamps.
+async function walkTrash(dir) {
+  const out = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === "ENOENT") return out;
+    throw err;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue; // skip hidden
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...(await walkTrash(full)));
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+// list_trash() — every trashed note: its .trash path plus when it was trashed.
+export async function listTrash() {
+  const trashDirAbs = path.resolve(VAULT_ROOT, ".trash");
+  const files = await walkTrash(trashDirAbs);
+
+  const entries = files.map((abs) => {
+    const vaultRelPath = toVaultRelative(abs); // e.g. ".trash/inbox/note.1720449600000.md"
+    const filename = path.basename(abs);
+    const ext = path.extname(filename); // .md
+    const nameWithoutExt = filename.slice(0, -ext.length); // note.1720449600000
+
+    // Try to parse epoch-ms suffix: base.epochms format
+    const lastDotIdx = nameWithoutExt.lastIndexOf(".");
+    let original = vaultRelPath;
+    let trashedAt = null;
+
+    if (lastDotIdx > 0) {
+      const maybePossibleEpoch = nameWithoutExt.slice(lastDotIdx + 1);
+      if (/^\d+$/.test(maybePossibleEpoch)) {
+        const epochMs = parseInt(maybePossibleEpoch, 10);
+        const base = nameWithoutExt.slice(0, lastDotIdx);
+        const dir = path.posix.dirname(vaultRelPath); // e.g. ".trash/inbox"
+        const trashPrefix = ".trash/";
+        const dirWithoutPrefix = dir.slice(trashPrefix.length); // e.g. "inbox"
+        const originalFile = dirWithoutPrefix === "" ? `${base}.md` : `${dirWithoutPrefix}/${base}.md`;
+        original = originalFile;
+        trashedAt = new Date(epochMs).toISOString();
+      } else {
+        // No valid epoch suffix; reconstruct original by just removing .trash/ prefix
+        const vaultRelWithoutPrefix = vaultRelPath.slice(".trash/".length);
+        original = vaultRelWithoutPrefix;
+      }
+    }
+
+    return { path: vaultRelPath, original, trashedAt };
+  });
+
+  // Sort: newest-trashed first (null trashedAt last, then by path)
+  entries.sort((a, b) => {
+    if (a.trashedAt === null && b.trashedAt === null) {
+      return a.path.localeCompare(b.path);
+    }
+    if (a.trashedAt === null) return 1;
+    if (b.trashedAt === null) return -1;
+    return b.trashedAt.localeCompare(a.trashedAt);
+  });
+
+  return entries;
+}
+
+// undelete_note(trash_path, to?) — move a note out of .trash back into the vault.
+export async function undeleteNote(trashRelPath, toRel) {
+  const trashAbs = resolveInTrash(trashRelPath);
+
+  // Check if source exists in trash
+  try {
+    await fs.access(trashAbs);
+  } catch {
+    throw new Error(`note does not exist: ${trashRelPath}`);
+  }
+
+  // Determine destination
+  let destAbs;
+  let destVaultRel;
+
+  if (toRel) {
+    // Explicit destination: validate with resolveInVault
+    destAbs = resolveInVault(toRel);
+    destVaultRel = toVaultRelative(destAbs);
+  } else {
+    // Reconstruct original path: strip .trash/ prefix and epoch-ms suffix
+    const vaultRelPath = toVaultRelative(trashAbs); // e.g. ".trash/inbox/note.1720449600000.md"
+    const filename = path.basename(trashAbs);
+    const ext = path.extname(filename); // .md
+    const nameWithoutExt = filename.slice(0, -ext.length); // note.1720449600000
+
+    // Parse epoch-ms suffix
+    const lastDotIdx = nameWithoutExt.lastIndexOf(".");
+    let base = nameWithoutExt;
+    if (lastDotIdx > 0 && /^\d+$/.test(nameWithoutExt.slice(lastDotIdx + 1))) {
+      base = nameWithoutExt.slice(0, lastDotIdx);
+    }
+
+    const dir = path.posix.dirname(vaultRelPath); // e.g. ".trash/inbox"
+    const dirWithoutPrefix = dir.slice(".trash/".length); // e.g. "inbox"
+    destVaultRel = dirWithoutPrefix === "" ? `${base}.md` : `${dirWithoutPrefix}/${base}.md`;
+    destAbs = resolveInVault(destVaultRel); // validates: in-vault, non-dot, .md
+  }
+
+  // Check if destination already exists
+  try {
+    await fs.access(destAbs);
+    throw new Error(`destination already exists: ${destVaultRel}`);
+  } catch (err) {
+    if (err.message.startsWith("destination already exists:")) {
+      throw err;
+    }
+    // ENOENT is expected — destination should not exist
+  }
+
+  // Create destination's parent folders
+  await fs.mkdir(path.dirname(destAbs), { recursive: true });
+
+  // Move the file
+  await fs.rename(trashAbs, destAbs);
+
+  return {
+    from: toVaultRelative(trashAbs),
+    to: destVaultRel,
+  };
 }
 
 // replace_text(path, oldText, newText, replaceAll?) — targeted find-and-replace

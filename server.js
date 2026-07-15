@@ -34,6 +34,8 @@ import {
   recentChanges,
   getFrontmatter,
   updateFrontmatter,
+  listTrash,
+  undeleteNote,
   vaultRoot,
 } from "./vault.js";
 import {
@@ -242,6 +244,46 @@ function buildMcpServer() {
       const result = await moveNote(from, to);
       await commitPaths([result.from, result.to], "move_note");
       return `Moved ${result.from} -> ${result.to}`;
+    })
+  );
+
+  server.registerTool(
+    "list_trash",
+    {
+      title: "List trashed notes",
+      description:
+        "List notes currently in the vault's .trash/ folder (where delete_note moves them), newest first, with each note's original path and deletion time. Use undelete_note to restore one.",
+      inputSchema: {},
+    },
+    withAudit("list_trash", async () => {
+      const entries = await listTrash();
+      if (entries.length === 0) {
+        return "(trash is empty)";
+      }
+      return entries
+        .map((entry) => `${entry.path}\n  original: ${entry.original}  trashed: ${entry.trashedAt ?? "unknown"}`)
+        .join("\n\n");
+    })
+  );
+
+  server.registerTool(
+    "undelete_note",
+    {
+      title: "Restore note from trash",
+      description:
+        "Move a note out of .trash/ back into the vault. By default it returns to its original path (the .trash timestamp suffix is stripped); pass `to` to restore it somewhere else. Fails if the destination already exists.",
+      inputSchema: {
+        path: z.string().describe("Trash path of the note (starts with .trash/), as returned by list_trash."),
+        to: z
+          .string()
+          .optional()
+          .describe("Optional different destination (relative vault path)."),
+      },
+    },
+    withAudit("undelete_note", async ({ path: p, to }) => {
+      const result = await undeleteNote(p, to);
+      await commitPath(result.to, "undelete_note");
+      return `Restored ${result.from} -> ${result.to}`;
     })
   );
 
