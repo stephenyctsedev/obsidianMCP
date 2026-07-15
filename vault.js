@@ -128,6 +128,45 @@ export async function deleteNote(relPath) {
   return path.relative(VAULT_ROOT, trashAbs).split(path.sep).join("/");
 }
 
+// move_note(fromRel, toRel) — rename/move an existing note within the vault.
+// Validates BOTH paths, errors if source missing or destination exists, creates
+// parent folders, then renames. Returns { from, to } as vault-relative paths.
+export async function moveNote(fromRel, toRel) {
+  const fromAbs = resolveInVault(fromRel); // validates: in-vault, non-dot, .md
+  const toAbs = resolveInVault(toRel); // validates: in-vault, non-dot, .md
+
+  // Check if source exists.
+  try {
+    await fs.access(fromAbs);
+  } catch {
+    throw new Error(`note does not exist: ${toVaultRelative(fromAbs)}`);
+  }
+
+  // Check if source and destination resolve to the same path.
+  if (fromAbs === toAbs) {
+    throw new Error("source and destination are the same");
+  }
+
+  // Check if destination already exists.
+  try {
+    await fs.access(toAbs);
+    throw new Error(`destination already exists: ${toVaultRelative(toAbs)}`);
+  } catch (err) {
+    if (err.message.startsWith("destination already exists:")) {
+      throw err;
+    }
+    // ENOENT is expected — destination should not exist
+  }
+
+  // Create destination's parent folders.
+  await fs.mkdir(path.dirname(toAbs), { recursive: true });
+
+  // Rename the file.
+  await fs.rename(fromAbs, toAbs);
+
+  return { from: toVaultRelative(fromAbs), to: toVaultRelative(toAbs) };
+}
+
 // replace_text(path, oldText, newText, replaceAll?) — targeted find-and-replace
 // within an EXISTING note. By default oldText must occur EXACTLY once (a 0-match
 // or an ambiguous multi-match errors out so the caller can supply more context);

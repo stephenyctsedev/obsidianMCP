@@ -29,6 +29,7 @@ import {
   appendNote,
   replaceText,
   deleteNote,
+  moveNote,
   searchNotes,
   vaultRoot,
 } from "./vault.js";
@@ -36,6 +37,7 @@ import {
   initGitRepo,
   startSnapshotTimer,
   commitPath,
+  commitPaths,
   noteHistory,
   showNoteAtRef,
   noteDiff,
@@ -93,7 +95,7 @@ async function audit({ tool, notePath, status, error }) {
 // Wrap a tool handler: run it, audit success/failure, and format the MCP reply.
 function withAudit(tool, run) {
   return async (args) => {
-    const notePath = args?.path ?? args?.folder ?? args?.query ?? null;
+    const notePath = args?.path ?? args?.folder ?? args?.query ?? args?.from ?? null;
     try {
       const text = await run(args);
       await audit({ tool, notePath, status: "success" });
@@ -219,6 +221,24 @@ function buildMcpServer() {
       const trashed = await deleteNote(p);
       await commitPath(p, "delete_note");
       return `Moved ${p} to ${trashed}`;
+    })
+  );
+
+  server.registerTool(
+    "move_note",
+    {
+      title: "Move / rename note",
+      description:
+        "Move or rename a note within the vault. Fails if the source does not exist or the destination already exists. Parent folders of the destination are created automatically. Note: links in other notes pointing at the old path are NOT rewritten.",
+      inputSchema: {
+        from: z.string().describe("Relative vault path of the existing .md note."),
+        to: z.string().describe("New relative vault path for the note."),
+      },
+    },
+    withAudit("move_note", async ({ from, to }) => {
+      const result = await moveNote(from, to);
+      await commitPaths([result.from, result.to], "move_note");
+      return `Moved ${result.from} -> ${result.to}`;
     })
   );
 

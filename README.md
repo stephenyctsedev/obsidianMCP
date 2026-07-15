@@ -14,6 +14,7 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `append_note` | `(path, content)` | Append to an **existing** note (fails if missing). |
 | `replace_text` | `(path, old_text, new_text, replace_all?)` | Literal find-and-replace within an **existing** note. `old_text` must match exactly once unless `replace_all` is set; fails if missing or not found. |
 | `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
+| `move_note` | `(from, to)` | Move/rename a note (destination must not exist; parent folders auto-created; links in other notes are not rewritten). |
 | `search_notes` | `(query)` | Case-insensitive substring search; returns paths + snippets. |
 | `note_history` | `(path, limit?)` | List a note's git version history (newest first): commit hash, timestamp, action. Requires `GIT_VERSIONING`. |
 | `note_diff` | `(path, ref, against?)` | Unified diff (with a stat summary) for a note. `ref` alone = what that one commit changed; `against` = another hash to compare two versions, or `"now"` to compare against the current note. Large diffs are truncated. Requires `GIT_VERSIONING`. |

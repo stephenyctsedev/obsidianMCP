@@ -76,6 +76,23 @@ export async function commitPath(relPath, action) {
   });
 }
 
+// Best-effort commit of several vault-relative paths in ONE commit. Never throws.
+export async function commitPaths(relPaths, action) {
+  if (!gitEnabled) return;
+  return serial(async () => {
+    try {
+      const args = ["add", "-A", "--", ...relPaths];
+      await git(args);
+      const status = await git(["status", "--porcelain", "--", ...relPaths]);
+      if (!status.trim()) return; // nothing changed → no commit
+      const msg = `${action}: ${relPaths.join(" -> ")} @ ${new Date().toISOString()}`;
+      await git(["commit", "-m", msg, "--", ...relPaths]);
+    } catch (err) {
+      console.error(`git commit failed for paths [${relPaths.join(", ")}]: ${err.message}`);
+    }
+  });
+}
+
 // C) Best-effort whole-vault snapshot. Never throws.
 export async function snapshotAll() {
   if (!gitEnabled) return;
