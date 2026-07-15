@@ -61,22 +61,12 @@ export async function initGitRepo() {
 }
 
 // A) Best-effort commit of a single vault-relative path. Never throws.
-export async function commitPath(relPath, action) {
-  if (!gitEnabled) return;
-  return serial(async () => {
-    try {
-      await git(["add", "-A", "--", relPath]); // stages add/modify OR deletion
-      const status = await git(["status", "--porcelain", "--", relPath]);
-      if (!status.trim()) return; // nothing changed → no commit
-      const msg = `${action}: ${relPath} @ ${new Date().toISOString()}`;
-      await git(["commit", "-m", msg, "--", relPath]);
-    } catch (err) {
-      console.error(`git commit failed for ${relPath}: ${err.message}`);
-    }
-  });
+export function commitPath(relPath, action) {
+  return commitPaths([relPath], action);
 }
 
-// Best-effort commit of several vault-relative paths in ONE commit. Never throws.
+// Best-effort commit of several vault-relative paths in ONE commit
+// (stages add/modify OR deletion for each). Never throws.
 export async function commitPaths(relPaths, action) {
   if (!gitEnabled) return;
   return serial(async () => {

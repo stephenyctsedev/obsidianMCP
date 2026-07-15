@@ -79,12 +79,13 @@ const oauthProvider = createOAuthProvider({
 
 // --- Audit log -------------------------------------------------------------
 
-async function audit({ tool, notePath, status, error }) {
+async function audit({ tool, notePath, toPath, status, error }) {
   const line =
     JSON.stringify({
       ts: new Date().toISOString(),
       tool,
       path: notePath ?? null,
+      ...(toPath ? { to: toPath } : {}), // destination for move_note / undelete_note
       status, // "success" | "failure"
       ...(error ? { error: String(error).slice(0, 300) } : {}),
     }) + "\n";
@@ -98,15 +99,24 @@ async function audit({ tool, notePath, status, error }) {
 }
 
 // Wrap a tool handler: run it, audit success/failure, and format the MCP reply.
+// The audit line's `path` is the call's most identifying argument: an explicit
+// note path first, then the search query, then a move source, then a folder
+// scope — so a folder-scoped search still records what was searched for. Blank
+// strings are skipped (`??` alone would keep folder: ""). `to` is logged as its
+// own field when present so moves/restores record their destination too.
 function withAudit(tool, run) {
   return async (args) => {
-    const notePath = args?.path ?? args?.folder ?? args?.query ?? args?.from ?? null;
+    const notePath =
+      [args?.path, args?.query, args?.from, args?.folder].find(
+        (v) => typeof v === "string" && v.trim() !== ""
+      ) ?? null;
+    const toPath = typeof args?.to === "string" && args.to.trim() !== "" ? args.to : null;
     try {
       const text = await run(args);
-      await audit({ tool, notePath, status: "success" });
+      await audit({ tool, notePath, toPath, status: "success" });
       return { content: [{ type: "text", text }] };
     } catch (err) {
-      await audit({ tool, notePath, status: "failure", error: err.message });
+      await audit({ tool, notePath, toPath, status: "failure", error: err.message });
       return {
         isError: true,
         content: [{ type: "text", text: `Error: ${err.message}` }],
@@ -308,20 +318,24 @@ function buildMcpServer() {
       },
     },
     withAudit("search_notes", async ({ query, folder, limit }) => {
-      const hits = await searchNotes(query, folder, limit ?? 20);
+      const { hits, truncated } = await searchNotes(query, folder, limit ?? 20);
       if (!hits.length) {
         if (folder && folder.trim() !== "") {
           return `No matches for "${query}" in ${folder}.`;
         }
         return `No matches for "${query}".`;
       }
-      return hits
+      let text = hits
         .map((h) => {
           const matchText = h.matchCount === 1 ? "match" : "matches";
           const snippetLines = h.snippets.map((s) => `  ${s}`).join("\n");
           return `${h.path}  (${h.matchCount} ${matchText})\n${snippetLines}`;
         })
         .join("\n\n");
+      if (truncated) {
+        text += `\n\n(capped at ${hits.length} files — more matching files exist; raise limit or narrow with folder)`;
+      }
+      return text;
     })
   );
 
