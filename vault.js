@@ -211,31 +211,61 @@ export async function replaceText(relPath, oldText, newText, replaceAll = false)
   return { relPath: toVaultRelative(abs), count: replaceAll ? count : 1 };
 }
 
-// search_notes(query) — case-insensitive substring search across all .md files.
-// Returns [{ path, snippet }] with ~120 chars of context around the first hit.
-export async function searchNotes(query) {
+// search_notes(query, folder?, limit?) — case-insensitive substring search.
+// Scans .md files (optionally within one subfolder), returns up to `limit`
+// matching files, each with up to 3 snippets around distinct matches.
+export async function searchNotes(query, folder, limit = 20) {
   if (typeof query !== "string" || query.trim() === "") {
     throw new Error("query must be a non-empty string");
   }
+
+  // Clamp limit: valid range 1-100, default 20
+  const clampedLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 100) : 20;
+
+  // Determine base directory
+  let base = VAULT_ROOT;
+  if (folder && folder.trim() !== "") {
+    base = resolveInVault(folder, { requireMd: false });
+  }
+
   const needle = query.toLowerCase();
-  const files = await walkMarkdown(VAULT_ROOT);
+  const files = await walkMarkdown(base);
   const results = [];
+
   for (const file of files) {
+    if (results.length >= clampedLimit) break; // Stop once we have enough matching files
+
     let text;
     try {
       text = await fs.readFile(file, "utf8");
     } catch {
       continue;
     }
-    const idx = text.toLowerCase().indexOf(needle);
-    if (idx === -1) continue;
-    const start = Math.max(0, idx - 40);
-    const end = Math.min(text.length, idx + query.length + 80);
-    let snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
-    if (start > 0) snippet = "…" + snippet;
-    if (end < text.length) snippet = snippet + "…";
-    results.push({ path: toVaultRelative(file), snippet });
+
+    const lowerText = text.toLowerCase();
+    const snippets = [];
+    let matchCount = 0;
+    let searchPos = 0;
+
+    // Count total matches and collect up to 3 snippets
+    for (let idx = lowerText.indexOf(needle, searchPos); idx !== -1; idx = lowerText.indexOf(needle, searchPos)) {
+      matchCount++;
+      if (snippets.length < 3) {
+        const start = Math.max(0, idx - 40);
+        const end = Math.min(text.length, idx + query.length + 80);
+        let snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
+        if (start > 0) snippet = "…" + snippet;
+        if (end < text.length) snippet = snippet + "…";
+        snippets.push(snippet);
+      }
+      searchPos = idx + query.length;
+    }
+
+    if (matchCount > 0) {
+      results.push({ path: toVaultRelative(file), matchCount, snippets });
+    }
   }
+
   return results;
 }
 

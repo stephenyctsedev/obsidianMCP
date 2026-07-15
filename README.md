@@ -15,7 +15,7 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `replace_text` | `(path, old_text, new_text, replace_all?)` | Literal find-and-replace within an **existing** note. `old_text` must match exactly once unless `replace_all` is set; fails if missing or not found. |
 | `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
 | `move_note` | `(from, to)` | Move/rename a note (destination must not exist; parent folders auto-created; links in other notes are not rewritten). |
-| `search_notes` | `(query)` | Case-insensitive substring search; returns paths + snippets. |
+| `search_notes` | `(query, folder?, limit?)` | Case-insensitive substring search, optionally scoped to a subfolder; returns up to limit files (default 20, max 100) with match counts and up to 3 snippets each. |
 | `recent_changes` | `(folder?, limit?)` | Most recently modified notes (filesystem mtime, newest first; default 20, max 100). |
 | `get_frontmatter` | `(path)` | Parsed YAML frontmatter as JSON (null if none). |
 | `update_frontmatter` | `(path, key, value)` | Set or remove (value=null) one top-level frontmatter key; creates/removes the block as needed; body untouched. |

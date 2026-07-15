@@ -250,15 +250,36 @@ function buildMcpServer() {
     {
       title: "Search notes",
       description:
-        "Case-insensitive substring search across all .md files. Returns matching file paths with a short snippet.",
+        "Case-insensitive substring search across .md files, optionally within a subfolder. Returns up to `limit` matching files (default 20), each with a match count and up to 3 snippets.",
       inputSchema: {
         query: z.string().describe("Text to search for."),
+        folder: z
+          .string()
+          .optional()
+          .describe("Optional subfolder (relative vault path) to search within."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Max matching files to return (default 20, max 100)."),
       },
     },
-    withAudit("search_notes", async ({ query }) => {
-      const hits = await searchNotes(query);
-      if (!hits.length) return `No matches for "${query}".`;
-      return hits.map((h) => `${h.path}\n  ${h.snippet}`).join("\n\n");
+    withAudit("search_notes", async ({ query, folder, limit }) => {
+      const hits = await searchNotes(query, folder, limit ?? 20);
+      if (!hits.length) {
+        if (folder && folder.trim() !== "") {
+          return `No matches for "${query}" in ${folder}.`;
+        }
+        return `No matches for "${query}".`;
+      }
+      return hits
+        .map((h) => {
+          const matchText = h.matchCount === 1 ? "match" : "matches";
+          const snippetLines = h.snippets.map((s) => `  ${s}`).join("\n");
+          return `${h.path}  (${h.matchCount} ${matchText})\n${snippetLines}`;
+        })
+        .join("\n\n");
     })
   );
 
