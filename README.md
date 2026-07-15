@@ -14,7 +14,13 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `append_note` | `(path, content)` | Append to an **existing** note (fails if missing). |
 | `replace_text` | `(path, old_text, new_text, replace_all?)` | Literal find-and-replace within an **existing** note. `old_text` must match exactly once unless `replace_all` is set; fails if missing or not found. |
 | `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
-| `search_notes` | `(query)` | Case-insensitive substring search; returns paths + snippets. |
+| `move_note` | `(from, to)` | Move/rename a note (destination must not exist; parent folders auto-created; links in other notes are not rewritten). |
+| `list_trash` | `()` | List trashed notes with original path + deletion time. |
+| `undelete_note` | `(path, to?)` | Restore a trashed note to its original path (or `to`); fails if destination exists. |
+| `search_notes` | `(query, folder?, limit?)` | Case-insensitive substring search, optionally scoped to a subfolder; returns up to `limit` files (default 20, max 100) with match counts and up to 3 snippets each, and flags when more matching files exist beyond the cap. |
+| `recent_changes` | `(folder?, limit?)` | Most recently modified notes (filesystem mtime, newest first; default 20, max 100). |
+| `get_frontmatter` | `(path)` | Parsed YAML frontmatter as JSON (null if none). |
+| `update_frontmatter` | `(path, key, value)` | Set or remove (value=null) one top-level frontmatter key; creates/removes the block as needed; body untouched. |
 | `note_history` | `(path, limit?)` | List a note's git version history (newest first): commit hash, timestamp, action. Requires `GIT_VERSIONING`. |
 | `note_diff` | `(path, ref, against?)` | Unified diff (with a stat summary) for a note. `ref` alone = what that one commit changed; `against` = another hash to compare two versions, or `"now"` to compare against the current note. Large diffs are truncated. Requires `GIT_VERSIONING`. |
 | `restore_note` | `(path, ref)` | Restore a note to an earlier version (`ref` = hash from `note_history`), written back as a **new** version so history is preserved. Requires `GIT_VERSIONING`. |
@@ -28,9 +34,9 @@ files are accepted.
 
 `delete_note` never hard-deletes — it **moves** the note into the vault's
 `.trash/` folder (subfolder preserved, an epoch-ms suffix added to avoid
-collisions), so it's recoverable from File Station. Because `.trash` is a
-dot-folder, the deleted note immediately disappears from `list_notes`,
-`read_note`, and `search_notes`.
+collisions), so it's recoverable from File Station or via `list_trash` +
+`undelete_note`. Because `.trash` is a dot-folder, the deleted note immediately
+disappears from `list_notes`, `read_note`, and `search_notes`.
 
 ⚠️ **Deletions may not propagate to your devices.** With Remotely Save in
 **Bidirectional (default)** mode, deletions are *not* synced (only the

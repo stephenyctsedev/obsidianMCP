@@ -29,13 +29,20 @@ import {
   appendNote,
   replaceText,
   deleteNote,
+  moveNote,
   searchNotes,
+  recentChanges,
+  getFrontmatter,
+  updateFrontmatter,
+  listTrash,
+  undeleteNote,
   vaultRoot,
 } from "./vault.js";
 import {
   initGitRepo,
   startSnapshotTimer,
   commitPath,
+  commitPaths,
   noteHistory,
   showNoteAtRef,
   noteDiff,
@@ -72,12 +79,13 @@ const oauthProvider = createOAuthProvider({
 
 // --- Audit log -------------------------------------------------------------
 
-async function audit({ tool, notePath, status, error }) {
+async function audit({ tool, notePath, toPath, status, error }) {
   const line =
     JSON.stringify({
       ts: new Date().toISOString(),
       tool,
       path: notePath ?? null,
+      ...(toPath ? { to: toPath } : {}), // destination for move_note / undelete_note
       status, // "success" | "failure"
       ...(error ? { error: String(error).slice(0, 300) } : {}),
     }) + "\n";
@@ -91,15 +99,24 @@ async function audit({ tool, notePath, status, error }) {
 }
 
 // Wrap a tool handler: run it, audit success/failure, and format the MCP reply.
+// The audit line's `path` is the call's most identifying argument: an explicit
+// note path first, then the search query, then a move source, then a folder
+// scope — so a folder-scoped search still records what was searched for. Blank
+// strings are skipped (`??` alone would keep folder: ""). `to` is logged as its
+// own field when present so moves/restores record their destination too.
 function withAudit(tool, run) {
   return async (args) => {
-    const notePath = args?.path ?? args?.folder ?? args?.query ?? null;
+    const notePath =
+      [args?.path, args?.query, args?.from, args?.folder].find(
+        (v) => typeof v === "string" && v.trim() !== ""
+      ) ?? null;
+    const toPath = typeof args?.to === "string" && args.to.trim() !== "" ? args.to : null;
     try {
       const text = await run(args);
-      await audit({ tool, notePath, status: "success" });
+      await audit({ tool, notePath, toPath, status: "success" });
       return { content: [{ type: "text", text }] };
     } catch (err) {
-      await audit({ tool, notePath, status: "failure", error: err.message });
+      await audit({ tool, notePath, toPath, status: "failure", error: err.message });
       return {
         isError: true,
         content: [{ type: "text", text: `Error: ${err.message}` }],
@@ -223,19 +240,172 @@ function buildMcpServer() {
   );
 
   server.registerTool(
+    "move_note",
+    {
+      title: "Move / rename note",
+      description:
+        "Move or rename a note within the vault. Fails if the source does not exist or the destination already exists. Parent folders of the destination are created automatically. Note: links in other notes pointing at the old path are NOT rewritten.",
+      inputSchema: {
+        from: z.string().describe("Relative vault path of the existing .md note."),
+        to: z.string().describe("New relative vault path for the note."),
+      },
+    },
+    withAudit("move_note", async ({ from, to }) => {
+      const result = await moveNote(from, to);
+      await commitPaths([result.from, result.to], "move_note");
+      return `Moved ${result.from} -> ${result.to}`;
+    })
+  );
+
+  server.registerTool(
+    "list_trash",
+    {
+      title: "List trashed notes",
+      description:
+        "List notes currently in the vault's .trash/ folder (where delete_note moves them), newest first, with each note's original path and deletion time. Use undelete_note to restore one.",
+      inputSchema: {},
+    },
+    withAudit("list_trash", async () => {
+      const entries = await listTrash();
+      if (entries.length === 0) {
+        return "(trash is empty)";
+      }
+      return entries
+        .map((entry) => `${entry.path}\n  original: ${entry.original}  trashed: ${entry.trashedAt ?? "unknown"}`)
+        .join("\n\n");
+    })
+  );
+
+  server.registerTool(
+    "undelete_note",
+    {
+      title: "Restore note from trash",
+      description:
+        "Move a note out of .trash/ back into the vault. By default it returns to its original path (the .trash timestamp suffix is stripped); pass `to` to restore it somewhere else. Fails if the destination already exists.",
+      inputSchema: {
+        path: z.string().describe("Trash path of the note (starts with .trash/), as returned by list_trash."),
+        to: z
+          .string()
+          .optional()
+          .describe("Optional different destination (relative vault path)."),
+      },
+    },
+    withAudit("undelete_note", async ({ path: p, to }) => {
+      const result = await undeleteNote(p, to);
+      await commitPath(result.to, "undelete_note");
+      return `Restored ${result.from} -> ${result.to}`;
+    })
+  );
+
+  server.registerTool(
     "search_notes",
     {
       title: "Search notes",
       description:
-        "Case-insensitive substring search across all .md files. Returns matching file paths with a short snippet.",
+        "Case-insensitive substring search across .md files, optionally within a subfolder. Returns up to `limit` matching files (default 20), each with a match count and up to 3 snippets.",
       inputSchema: {
         query: z.string().describe("Text to search for."),
+        folder: z
+          .string()
+          .optional()
+          .describe("Optional subfolder (relative vault path) to search within."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Max matching files to return (default 20, max 100)."),
       },
     },
-    withAudit("search_notes", async ({ query }) => {
-      const hits = await searchNotes(query);
-      if (!hits.length) return `No matches for "${query}".`;
-      return hits.map((h) => `${h.path}\n  ${h.snippet}`).join("\n\n");
+    withAudit("search_notes", async ({ query, folder, limit }) => {
+      const { hits, truncated } = await searchNotes(query, folder, limit ?? 20);
+      if (!hits.length) {
+        if (folder && folder.trim() !== "") {
+          return `No matches for "${query}" in ${folder}.`;
+        }
+        return `No matches for "${query}".`;
+      }
+      let text = hits
+        .map((h) => {
+          const matchText = h.matchCount === 1 ? "match" : "matches";
+          const snippetLines = h.snippets.map((s) => `  ${s}`).join("\n");
+          return `${h.path}  (${h.matchCount} ${matchText})\n${snippetLines}`;
+        })
+        .join("\n\n");
+      if (truncated) {
+        text += `\n\n(capped at ${hits.length} files — more matching files exist; raise limit or narrow with folder)`;
+      }
+      return text;
+    })
+  );
+
+  server.registerTool(
+    "recent_changes",
+    {
+      title: "Recently changed notes",
+      description:
+        "List the most recently modified notes, newest first, based on filesystem modification time (so edits synced from other devices count too). Optionally restrict to a subfolder.",
+      inputSchema: {
+        folder: z
+          .string()
+          .optional()
+          .describe("Optional subfolder (relative vault path) to look within."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Max notes to return (default 20, max 100)."),
+      },
+    },
+    withAudit("recent_changes", async ({ folder, limit }) => {
+      const results = await recentChanges(folder, limit ?? 20);
+      if (!results.length) return "(no markdown notes found)";
+      return results.map((r) => `${r.mtime}  ${r.path}`).join("\n");
+    })
+  );
+
+  server.registerTool(
+    "get_frontmatter",
+    {
+      title: "Get frontmatter",
+      description:
+        "Return a note's parsed YAML frontmatter as JSON, or null if the note has no frontmatter block.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note."),
+      },
+    },
+    withAudit("get_frontmatter", async ({ path: p }) => {
+      const fm = await getFrontmatter(p);
+      return JSON.stringify(fm, null, 2);
+    })
+  );
+
+  server.registerTool(
+    "update_frontmatter",
+    {
+      title: "Update frontmatter",
+      description:
+        "Set or remove a single top-level key in a note's YAML frontmatter. Pass value as a JSON value to set it, or null to remove the key. Creates the frontmatter block if missing; removes it when the last key is removed. The note body is left untouched, but YAML formatting/comments inside the frontmatter are normalized.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .md note."),
+        key: z.string().describe("Top-level frontmatter key to set or remove."),
+        value: z
+          .union([
+            z.string(),
+            z.number(),
+            z.boolean(),
+            z.array(z.any()),
+            z.record(z.any()),
+            z.null(),
+          ])
+          .describe("New value (JSON). Pass null to remove the key."),
+      },
+    },
+    withAudit("update_frontmatter", async ({ path: p, key, value }) => {
+      const { relPath, action } = await updateFrontmatter(p, key, value);
+      await commitPath(relPath, "update_frontmatter");
+      return `${action === "removed" ? "Removed" : "Set"} frontmatter key "${key}" in ${relPath}`;
     })
   );
 
