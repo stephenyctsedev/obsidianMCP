@@ -16,6 +16,7 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
 | `move_note` | `(from, to)` | Move/rename a note (destination must not exist; parent folders auto-created; links in other notes are not rewritten). |
 | `search_notes` | `(query)` | Case-insensitive substring search; returns paths + snippets. |
+| `recent_changes` | `(folder?, limit?)` | Most recently modified notes (filesystem mtime, newest first; default 20, max 100). |
 | `get_frontmatter` | `(path)` | Parsed YAML frontmatter as JSON (null if none). |
 | `update_frontmatter` | `(path, key, value)` | Set or remove (value=null) one top-level frontmatter key; creates/removes the block as needed; body untouched. |
 | `note_history` | `(path, limit?)` | List a note's git version history (newest first): commit hash, timestamp, action. Requires `GIT_VERSIONING`. |

@@ -31,6 +31,7 @@ import {
   deleteNote,
   moveNote,
   searchNotes,
+  recentChanges,
   getFrontmatter,
   updateFrontmatter,
   vaultRoot,
@@ -258,6 +259,32 @@ function buildMcpServer() {
       const hits = await searchNotes(query);
       if (!hits.length) return `No matches for "${query}".`;
       return hits.map((h) => `${h.path}\n  ${h.snippet}`).join("\n\n");
+    })
+  );
+
+  server.registerTool(
+    "recent_changes",
+    {
+      title: "Recently changed notes",
+      description:
+        "List the most recently modified notes, newest first, based on filesystem modification time (so edits synced from other devices count too). Optionally restrict to a subfolder.",
+      inputSchema: {
+        folder: z
+          .string()
+          .optional()
+          .describe("Optional subfolder (relative vault path) to look within."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Max notes to return (default 20, max 100)."),
+      },
+    },
+    withAudit("recent_changes", async ({ folder, limit }) => {
+      const results = await recentChanges(folder, limit ?? 20);
+      if (!results.length) return "(no markdown notes found)";
+      return results.map((r) => `${r.mtime}  ${r.path}`).join("\n");
     })
   );
 

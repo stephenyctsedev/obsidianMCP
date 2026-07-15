@@ -239,6 +239,43 @@ export async function searchNotes(query) {
   return results;
 }
 
+// recent_changes(folder?, limit?) — notes sorted by modification time, newest
+// first. Uses filesystem mtime, so it also reflects edits synced in from
+// devices, and works whether or not git versioning is enabled.
+export async function recentChanges(folder, limit = 20) {
+  // Clamp limit the same way noteHistory does
+  const clampedLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 100) : 20;
+
+  let base = VAULT_ROOT;
+  if (folder && folder.trim() !== "") {
+    base = resolveInVault(folder, { requireMd: false });
+  }
+
+  const files = await walkMarkdown(base);
+
+  // fs.stat each file for mtime; skip on failure
+  const statsPromises = files.map(async (file) => {
+    try {
+      const stat = await fs.stat(file);
+      return { path: file, mtime: stat.mtime };
+    } catch {
+      return null;
+    }
+  });
+
+  const stats = await Promise.all(statsPromises);
+  const validStats = stats.filter((s) => s !== null);
+
+  // Sort by mtime descending (newest first), take top `clampedLimit`
+  validStats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+  const results = validStats.slice(0, clampedLimit);
+
+  return results.map((s) => ({
+    path: toVaultRelative(s.path),
+    mtime: s.mtime.toISOString(),
+  }));
+}
+
 // Split a note into { frontmatter: string|null, body: string }. A frontmatter
 // block is a leading "---\n...\n---\n" fence at the very start of the file.
 // Rules: the file must START with `---` on its own first line (allow `---\r\n` too);
