@@ -6,6 +6,14 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import {
+  extractBaseBlocks,
+  extractBaseEmbeds,
+  parseBaseSpec,
+  inferFolderScope,
+  runBase,
+  renderBaseResult,
+} from "./bases.js";
 
 // VAULT_PATH is the mounted directory (which may hold several Obsidian vaults);
 // VAULT_NAME optionally selects one vault subfolder inside it (e.g. "Memory").
@@ -24,7 +32,7 @@ function hasHiddenSegment(relPath) {
 
 // Resolve a caller-supplied relative path to an absolute path inside the vault.
 // Throws on traversal escapes, dot-segments, or (when requireMd) non-.md files.
-function resolveInVault(relPath, { requireMd = true } = {}) {
+function resolveInVault(relPath, { requireMd = true, allowedExts = [".md"] } = {}) {
   if (typeof relPath !== "string" || relPath.trim() === "") {
     throw new Error("path must be a non-empty string");
   }
@@ -37,14 +45,19 @@ function resolveInVault(relPath, { requireMd = true } = {}) {
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error("path escapes the vault root");
   }
-  if (requireMd && !abs.toLowerCase().endsWith(".md")) {
-    throw new Error("path must point to a .md file");
+  if (requireMd && !allowedExts.some((ext) => abs.toLowerCase().endsWith(ext))) {
+    throw new Error(`path must point to a ${allowedExts.join(" or ")} file`);
   }
   return abs;
 }
 
 // Recursively collect .md files under `dir`, skipping dot-directories.
-async function walkMarkdown(dir) {
+function walkMarkdown(dir) {
+  return walkByExt(dir, [".md"]);
+}
+
+// Recursively collect files with one of `exts` under `dir`, skipping dot-dirs.
+async function walkByExt(dir, exts) {
   const out = [];
   let entries;
   try {
@@ -57,8 +70,8 @@ async function walkMarkdown(dir) {
     if (entry.name.startsWith(".")) continue; // skip hidden
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      out.push(...(await walkMarkdown(full)));
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      out.push(...(await walkByExt(full, exts)));
+    } else if (entry.isFile() && exts.some((ext) => entry.name.toLowerCase().endsWith(ext))) {
       out.push(full);
     }
   }
@@ -138,21 +151,30 @@ function resolveInTrash(relPath) {
   return abs;
 }
 
-// list_notes(folder?) — return relative paths of every .md file, optionally
-// restricted to a subfolder.
-export async function listNotes(folder) {
+// list_notes(folder?, includeBases?) — return relative paths of every .md file
+// (plus .base files when asked), optionally restricted to a subfolder.
+export async function listNotes(folder, { includeBases = false } = {}) {
   let base = VAULT_ROOT;
   if (folder && folder.trim() !== "") {
     base = resolveInVault(folder, { requireMd: false });
   }
-  const files = await walkMarkdown(base);
+  const files = includeBases
+    ? await walkByExt(base, [".md", ".base"])
+    : await walkMarkdown(base);
   return files.map(toVaultRelative).sort();
 }
 
-// read_note(path) — full content of a note.
-export async function readNote(relPath) {
+// read_note(path, { resolve }) — full content of a note. When the note embeds
+// a base (a ```base block or an `![[X.base]]` embed) and `resolve` is on, the
+// data that base renders is appended after the note text, so ONE call returns
+// both the note and the rows a human sees in Obsidian. Pass resolve:false to
+// get the file exactly as stored (e.g. before editing it).
+export async function readNote(relPath, { resolve = true } = {}) {
   const abs = resolveInVault(relPath);
-  return await fs.readFile(abs, "utf8");
+  const text = await fs.readFile(abs, "utf8");
+  if (!resolve) return text;
+  const resolved = await resolveBaseData(text);
+  return resolved ? `${text}${text.endsWith("\n") ? "" : "\n"}\n${resolved}` : text;
 }
 
 // write_note(path, content) — create or overwrite, making parent folders.
@@ -599,6 +621,177 @@ export function updateFrontmatter(relPath, key, value) {
 // no dot-segments, must be .md) and return it normalized to a vault-relative,
 // forward-slash form suitable for `git` pathspecs. Throws on any violation.
 // Exists so git.js can sanitize a path BEFORE handing it to a git subprocess.
+// --- Bases (embedded query) resolution -------------------------------------
+
+// Ceiling on how many notes one base query may scan when it isn't scoped to a
+// folder, so a whole-vault base can't turn one read_note into an unbounded read.
+const MAX_BASE_SCAN = 5000;
+
+const RESOLVED_HEADER =
+  "<!-- obsidian-mcp: the section below is DATA resolved from the base query " +
+  "above (frontmatter of the notes it selects). It is NOT part of the note " +
+  "file — never write it back. Call read_note with resolve=false for the raw file. -->";
+
+// Frontmatter `tags:` as a flat list, without leading "#".
+function normalizeTags(raw) {
+  if (raw === null || raw === undefined) return [];
+  const list = Array.isArray(raw) ? raw : String(raw).split(/[,\s]+/);
+  return list
+    .map((t) => String(t).trim().replace(/^#/, ""))
+    .filter((t) => t !== "");
+}
+
+// One note as the base evaluator sees it: file metadata + parsed frontmatter.
+async function toNoteRecord(abs) {
+  let text;
+  let stat;
+  try {
+    [text, stat] = await Promise.all([fs.readFile(abs, "utf8"), fs.stat(abs)]);
+  } catch {
+    return null; // vanished mid-walk, or unreadable — skip it
+  }
+  const relPath = toVaultRelative(abs);
+  const { frontmatter } = splitFrontmatter(text);
+  let properties = {};
+  let error = null;
+  if (frontmatter !== null) {
+    try {
+      const parsed = parseYaml(frontmatter);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) properties = parsed;
+    } catch (err) {
+      error = err.message; // invalid YAML: the note still exists, it just has no usable props
+    }
+  }
+  const slash = relPath.lastIndexOf("/");
+  return {
+    path: relPath,
+    name: relPath.slice(slash + 1).replace(/\.md$/i, ""),
+    folder: slash === -1 ? "" : relPath.slice(0, slash),
+    ext: "md",
+    size: stat.size,
+    mtime: stat.mtime,
+    ctime: stat.birthtime || stat.ctime,
+    tags: normalizeTags(properties.tags ?? properties.tag),
+    properties,
+    error,
+  };
+}
+
+// collect_notes(folder?) — every note in scope with its parsed frontmatter.
+// This is what a base query runs against.
+export async function collectNotes(folder, { max = MAX_BASE_SCAN } = {}) {
+  let base = VAULT_ROOT;
+  if (folder && folder.trim() !== "") {
+    base = resolveInVault(folder, { requireMd: false });
+  }
+  const files = (await walkMarkdown(base)).sort();
+  const truncated = files.length > max;
+  const capped = files.slice(0, max);
+
+  const notes = [];
+  for (let i = 0; i < capped.length; i += 32) {
+    const batch = await Promise.all(capped.slice(i, i + 32).map(toNoteRecord));
+    for (const note of batch) if (note) notes.push(note);
+  }
+  return { notes, truncated };
+}
+
+// Locate a `![[X.base]]` embed target: exact vault path first, then basename.
+async function findBaseFile(target) {
+  const wanted = target.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  const files = await walkByExt(VAULT_ROOT, [".base"]);
+  const rels = files.map(toVaultRelative).sort();
+  const exact = rels.find((rel) => rel.toLowerCase() === wanted);
+  if (exact) return exact;
+  const leaf = wanted.slice(wanted.lastIndexOf("/") + 1);
+  return rels.find((rel) => rel.slice(rel.lastIndexOf("/") + 1).toLowerCase() === leaf) || null;
+}
+
+// Run one base definition and render it. `cache` reuses a folder scan across
+// several bases in the same note.
+async function resolveOneBase(yamlText, source, viewFilter, cache) {
+  let spec;
+  try {
+    spec = parseBaseSpec(yamlText);
+  } catch (err) {
+    return `### Base data — ${source}\n\n(could not parse the base definition: ${err.message})`;
+  }
+
+  const scope = inferFolderScope(spec.filters);
+  const key = scope ?? "";
+  if (!cache.has(key)) {
+    try {
+      cache.set(key, await collectNotes(scope ?? undefined));
+    } catch (err) {
+      return `### Base data — ${source}\n\n(could not scan ${scope || "the vault"}: ${err.message})`;
+    }
+  }
+  const { notes, truncated } = cache.get(key);
+
+  const result = runBase(spec, notes);
+  if (truncated) {
+    result.warnings.push(
+      `only the first ${notes.length} notes in scope were scanned (cap: ${MAX_BASE_SCAN}) — rows may be missing`
+    );
+  }
+  return renderBaseResult(result, { source, scanned: notes.length, scope, viewFilter });
+}
+
+// Resolve every base embedded in a note's text, or null if it embeds none.
+async function resolveBaseData(text) {
+  const blocks = extractBaseBlocks(text);
+  const embeds = extractBaseEmbeds(text);
+  if (!blocks.length && !embeds.length) return null;
+
+  const cache = new Map();
+  const sections = [];
+
+  for (const block of blocks) {
+    sections.push(await resolveOneBase(block.yaml, `base block (line ${block.line})`, null, cache));
+  }
+  for (const embed of embeds) {
+    let found;
+    try {
+      found = await findBaseFile(embed.target);
+    } catch {
+      found = null;
+    }
+    if (!found) {
+      sections.push(`### Base data — ${embed.raw}\n\n(no "${embed.target}" file found in the vault)`);
+      continue;
+    }
+    let yamlText;
+    try {
+      yamlText = await fs.readFile(path.resolve(VAULT_ROOT, found), "utf8");
+    } catch (err) {
+      sections.push(`### Base data — ${found}\n\n(could not read the base file: ${err.message})`);
+      continue;
+    }
+    sections.push(await resolveOneBase(yamlText, found, embed.view, cache));
+  }
+
+  return [RESOLVED_HEADER, ...sections].join("\n\n");
+}
+
+// read_base(path, view?) — a standalone `.base` file: its definition plus the
+// data it renders. `view` limits the output to one named view.
+export async function readBase(relPath, view) {
+  const abs = resolveInVault(relPath, { allowedExts: [".base"] });
+  let text;
+  try {
+    text = await fs.readFile(abs, "utf8");
+  } catch {
+    throw new Error(`base file does not exist: ${toVaultRelative(abs)}`);
+  }
+  const rendered = await resolveOneBase(
+    text,
+    toVaultRelative(abs),
+    view && view.trim() !== "" ? view.trim() : null,
+    new Map()
+  );
+  return `${text.trim()}\n\n${RESOLVED_HEADER}\n\n${rendered}`;
+}
+
 export function assertVaultPath(relPath) {
   const abs = resolveInVault(relPath); // throws on traversal / dot / non-.md
   return toVaultRelative(abs);

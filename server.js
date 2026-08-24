@@ -25,6 +25,7 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import {
   listNotes,
   readNote,
+  readBase,
   writeNote,
   appendNote,
   replaceText,
@@ -135,16 +136,20 @@ function buildMcpServer() {
     {
       title: "List notes",
       description:
-        "List markdown (.md) files in the vault, optionally filtered to a subfolder. Returns relative vault paths.",
+        "List markdown (.md) files in the vault, optionally filtered to a subfolder. Returns relative vault paths. Set include_bases to also list Obsidian Bases (.base) files, which read_base can run.",
       inputSchema: {
         folder: z
           .string()
           .optional()
           .describe("Optional subfolder (relative vault path) to list within."),
+        include_bases: z
+          .boolean()
+          .optional()
+          .describe("Also list .base (Obsidian Bases) files. Default false."),
       },
     },
-    withAudit("list_notes", async ({ folder }) => {
-      const files = await listNotes(folder);
+    withAudit("list_notes", async ({ folder, include_bases }) => {
+      const files = await listNotes(folder, { includeBases: include_bases === true });
       return files.length ? files.join("\n") : "(no markdown notes found)";
     })
   );
@@ -153,12 +158,36 @@ function buildMcpServer() {
     "read_note",
     {
       title: "Read note",
-      description: "Return the full content of a note by its relative vault path.",
+      description:
+        "Return the full content of a note by its relative vault path. If the note embeds an Obsidian Base (a ```base block or an ![[X.base]] embed), the DATA that base renders — the frontmatter of the notes it selects, filtered, sorted and grouped as its views define — is appended after the note text, so one call returns everything the note shows in Obsidian instead of just the query. The appended section is marked and is NOT part of the file: pass resolve=false to get the file exactly as stored (do that before editing a note).",
       inputSchema: {
         path: z.string().describe("Relative vault path to the .md note."),
+        resolve: z
+          .boolean()
+          .optional()
+          .describe(
+            "Resolve embedded base queries into their data. Default true; set false for the raw file."
+          ),
       },
     },
-    withAudit("read_note", async ({ path: p }) => await readNote(p))
+    withAudit("read_note", async ({ path: p, resolve }) => await readNote(p, { resolve: resolve !== false }))
+  );
+
+  server.registerTool(
+    "read_base",
+    {
+      title: "Read base",
+      description:
+        "Run a standalone Obsidian Bases file (.base) and return its definition plus the data it renders: one table per view, with the notes it selects and their properties. Use list_notes with include_bases to find .base files.",
+      inputSchema: {
+        path: z.string().describe("Relative vault path to the .base file."),
+        view: z
+          .string()
+          .optional()
+          .describe("Optional view name to render on its own (default: every view)."),
+      },
+    },
+    withAudit("read_base", async ({ path: p, view }) => await readBase(p, view))
   );
 
   server.registerTool(
