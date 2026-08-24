@@ -8,8 +8,9 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 
 | Tool | Signature | Behavior |
 |------|-----------|----------|
-| `list_notes` | `(folder?)` | List `.md` files, optionally within a subfolder. |
-| `read_note` | `(path)` | Return the full content of a note. |
+| `list_notes` | `(folder?, include_bases?)` | List `.md` files, optionally within a subfolder; `include_bases` also lists `.base` files. |
+| `read_note` | `(path, resolve?)` | Return the full content of a note. If the note embeds an Obsidian **Base**, the data that base renders is appended too — see [Bases](#bases-notes-whose-data-lives-elsewhere). `resolve=false` returns the raw file. |
+| `read_base` | `(path, view?)` | Run a standalone `.base` file: its definition plus one table per view. `view` renders a single named view. |
 | `write_note` | `(path, content)` | Create or overwrite a note (parent folders auto-created). |
 | `append_note` | `(path, content)` | Append to an **existing** note (fails if missing). |
 | `replace_text` | `(path, old_text, new_text, replace_all?)` | Literal find-and-replace within an **existing** note. `old_text` must match exactly once unless `replace_all` is set; fails if missing or not found. |
@@ -28,7 +29,61 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 Any path or folder whose name starts with `.` (e.g. `.obsidian`, `.trash`) is
 refused — those internals are never listed, read, written, or searched.
 Paths are also confined to the vault root (no `../` escapes), and only `.md`
-files are accepted.
+files are accepted (plus `.base` files, for `read_base` / `list_notes`).
+
+### Bases: notes whose data lives elsewhere
+
+An Obsidian **Base** note contains a *query*, not data — the values you see in
+the table live in the frontmatter of the notes the query selects:
+
+````markdown
+```base
+filters:
+  and:
+    - file.inFolder("Travel/2026 Banff Packing List Data")
+views:
+  - type: table
+    name: Still To Pack
+    filters:
+      and:
+        - packed == false
+```
+````
+
+Reading that note literally would return the query and none of the 29 packing
+items. So `read_note` **runs** the base and appends the rows it renders — one
+markdown table per view, grouped and sorted as the view defines, with each
+row's `file.path` as the first column so you can act on it straight away. One
+call returns the note *and* its data. The same happens for `![[Something.base]]`
+embeds (`![[X.base#View Name]]` renders just that view), and `read_base` does it
+for a `.base` file directly.
+
+The appended block is clearly marked as generated and is **not** part of the
+file — never write it back. Pass `resolve=false` (and always before editing a
+note) to get the file exactly as stored.
+
+**Supported subset of the Bases language.** Filters (`and` / `or` / `not`,
+nested, plus view-level filters); `==` `!=` `>` `>=` `<` `<=`, `&&`, `||` and a
+leading `!`; `file.name` `file.path` `file.folder` `file.ext` `file.size`
+`file.mtime` `file.ctime` `file.tags`; `note.x`, bare `x`, nested `x.y`;
+`file.inFolder()` `file.hasTag()` (nested tags count) `file.hasProperty()`
+`.contains()` `.containsAny()` `.containsAll()` `.startsWith()` `.endsWith()`
+`.isEmpty()` `.isNotEmpty()`; `order`, `sort`, `groupBy`, `limit`, and
+`properties[].displayName` (the raw property key is kept in the header, so
+`update_frontmatter` always gets the real key).
+
+Anything else — formulas, summaries, date arithmetic, `link()`/`if()`/`date()` —
+is **not** evaluated. It is listed under a "Not evaluated" note in the output
+rather than silently dropped, so a partial answer is never mistaken for a
+complete one.
+
+An unset or blank property counts as *empty*: `empty == false` is true (so an
+item that never got a `packed:` value still shows up under "Still To Pack"),
+`empty == <any real value>` is false, and empty values sort last.
+
+Scanning is bounded: a base is scanned inside the folder its `file.inFolder()`
+filter names when it has one, at most 5000 notes otherwise, and each view
+renders at most 200 rows (the output says when it truncated).
 
 ### Deleting notes & Remotely Save
 
@@ -45,6 +100,12 @@ locally will **re-upload it** on its next sync, resurrecting it on the NAS. To
 make a deletion stick everywhere, also delete it on a device, or switch
 Remotely Save to an "…And Delete" mode (which then lets remote deletions wipe
 local files — use with care).
+
+### Tests
+
+`npm install && npm test` runs the unit tests (`node --test`) for the Bases
+evaluator and the read paths, against a throwaway fixture vault in `$TMPDIR` —
+your real vault is never touched.
 
 ## Endpoints
 
