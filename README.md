@@ -8,7 +8,7 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 
 | Tool | Signature | Behavior |
 |------|-----------|----------|
-| `list_notes` | `(folder?, include_bases?)` | List `.md` files, optionally within a subfolder; `include_bases` also lists `.base` files. |
+| `list_notes` | `(folder?, include_bases?, pattern?, depth?, limit?, offset?)` | List `.md` files as vault paths (`include_bases` also lists `.base` files). Capped at `limit` (default 200, max 1000) and reports the total, so a growing vault never returns everything at once — narrow with `folder`, a filename glob (`pattern`), or `depth` for an `ls`-style folder overview with note counts; `offset` pages through the rest. |
 | `read_note` | `(path, resolve?)` | Return the full content of a note. If the note embeds an Obsidian **Base**, the data that base renders is appended too — see [Bases](#bases-notes-whose-data-lives-elsewhere). `resolve=false` returns the raw file. |
 | `read_base` | `(path, view?)` | Run a standalone `.base` file: its definition plus one table per view. `view` renders a single named view. |
 | `write_note` | `(path, content)` | Create or overwrite a note (parent folders auto-created). |

@@ -136,7 +136,7 @@ function buildMcpServer() {
     {
       title: "List notes",
       description:
-        "List markdown (.md) files in the vault, optionally filtered to a subfolder. Returns relative vault paths. Set include_bases to also list Obsidian Bases (.base) files, which read_base can run.",
+        "List markdown (.md) files in the vault as relative vault paths. The listing is capped (default 200, max 1000) and reports the total, so on a large vault narrow it instead of paging blindly: `folder` scopes to a subtree, `pattern` filters by filename glob, and `depth` gives an `ls`-style view that collapses deeper subtrees into folders with note counts (start with depth=1 to see the vault's shape). To find notes BY CONTENT use search_notes, and for the latest edits use recent_changes — neither needs a full listing first. Set include_bases to also list Obsidian Bases (.base) files, which read_base can run.",
       inputSchema: {
         folder: z
           .string()
@@ -146,11 +146,63 @@ function buildMcpServer() {
           .boolean()
           .optional()
           .describe("Also list .base (Obsidian Bases) files. Default false."),
+        pattern: z
+          .string()
+          .optional()
+          .describe(
+            'Glob filter: "*" matches within a path segment, "**" across segments, "?" one character. A pattern without "/" matches the file name (e.g. "2026-*.md"); one with "/" matches the path below `folder` (e.g. "Travel/**/*.md"). Case-insensitive.'
+          ),
+        depth: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Show only this many levels below the listed folder; anything deeper is collapsed into a folder entry with its note count. Omit to list every note recursively."
+          ),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Max entries to return (default 200, max 1000)."),
+        offset: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Skip this many entries — page through a listing larger than `limit`."),
       },
     },
-    withAudit("list_notes", async ({ folder, include_bases }) => {
-      const files = await listNotes(folder, { includeBases: include_bases === true });
-      return files.length ? files.join("\n") : "(no markdown notes found)";
+    withAudit("list_notes", async ({ folder, include_bases, pattern, depth, limit, offset }) => {
+      const result = await listNotes(folder, {
+        includeBases: include_bases === true,
+        pattern,
+        depth,
+        limit,
+        offset,
+      });
+      if (!result.total) {
+        const where = folder && folder.trim() !== "" ? ` in ${folder}` : "";
+        return pattern
+          ? `(no notes matching "${pattern}"${where})`
+          : `(no markdown notes found${where})`;
+      }
+      let text = result.entries
+        .map((e) =>
+          e.type === "folder"
+            ? `${e.path}/  (${e.count} ${e.count === 1 ? "note" : "notes"})`
+            : e.path
+        )
+        .join("\n");
+      const to = result.offset + result.entries.length;
+      if (result.truncated || result.offset > 0) {
+        text += `\n\n(showing ${result.offset + 1}-${to} of ${result.total}`;
+        text += result.truncated
+          ? ` — pass offset=${to} for more, or narrow with folder/pattern, or pass depth=1 for a folder overview)`
+          : ")";
+      }
+      return text;
     })
   );
 

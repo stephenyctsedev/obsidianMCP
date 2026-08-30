@@ -281,10 +281,10 @@ test("read_base runs a standalone .base file", async () => {
 });
 
 test("list_notes can include .base files", async () => {
-  const withoutBases = await vault.listNotes("Travel");
-  assert.ok(!withoutBases.includes("Travel/Packing.base"));
-  const withBases = await vault.listNotes("Travel", { includeBases: true });
-  assert.ok(withBases.includes("Travel/Packing.base"));
+  const paths = async (opts) =>
+    (await vault.listNotes("Travel", opts)).entries.map((e) => e.path);
+  assert.ok(!(await paths()).includes("Travel/Packing.base"));
+  assert.ok((await paths({ includeBases: true })).includes("Travel/Packing.base"));
 });
 
 test.after(async () => {
