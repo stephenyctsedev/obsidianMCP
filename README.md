@@ -16,7 +16,7 @@ run on the NAS and be reached over the internet as a Claude custom connector.
 | `replace_text` | `(path, old_text, new_text, replace_all?)` | Literal find-and-replace within an **existing** note. `old_text` must match exactly once unless `replace_all` is set; fails if missing or not found. |
 | `delete_note` | `(path)` | Move a note to `.trash/` (recoverable, not a hard delete); fails if missing. |
 | `move_note` | `(from, to)` | Move/rename a note (destination must not exist; parent folders auto-created; links in other notes are not rewritten). |
-| `list_trash` | `()` | List trashed notes with original path + deletion time. |
+| `list_trash` | `(limit?, offset?)` | List trashed notes newest first with original path + deletion time; capped at `limit` (default 20, max 100), reports the total, and `offset` pages back through older deletions. |
 | `undelete_note` | `(path, to?)` | Restore a trashed note to its original path (or `to`); fails if destination exists. |
 | `search_notes` | `(query, folder?, limit?)` | Case-insensitive substring search, optionally scoped to a subfolder; returns up to `limit` files (default 20, max 100) with match counts and up to 3 snippets each, and flags when more matching files exist beyond the cap. |
 | `recent_changes` | `(folder?, limit?)` | Most recently modified notes (filesystem mtime, newest first; default 20, max 100). |

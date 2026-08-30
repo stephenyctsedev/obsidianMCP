@@ -384,10 +384,17 @@ function parseTrashPath(vaultRelPath) {
   return { original, trashedAt };
 }
 
-// list_trash() — every trashed note: its .trash path plus when it was trashed.
+// list_trash({ limit, offset }) — trashed notes, newest first: each one's
+// .trash path plus when it was trashed. Capped like every other listing (the
+// entries are two lines each, so the search/recent ceiling fits better than
+// list_notes'); `total` reports the full count and `offset` pages back through
+// older deletions.
 // walkMarkdown only filters entries INSIDE the directory it's given, so passing
 // the .trash dir itself works — hidden entries within .trash are still skipped.
-export async function listTrash() {
+export async function listTrash({ limit, offset } = {}) {
+  const clampedLimit = clampLimit(limit, 20);
+  const clampedOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+
   const trashDirAbs = path.resolve(VAULT_ROOT, ".trash");
   const files = await walkMarkdown(trashDirAbs);
 
@@ -407,7 +414,14 @@ export async function listTrash() {
     return b.trashedAt.localeCompare(a.trashedAt);
   });
 
-  return entries;
+  const page = entries.slice(clampedOffset, clampedOffset + clampedLimit);
+  return {
+    entries: page,
+    total: entries.length,
+    offset: clampedOffset,
+    limit: clampedLimit,
+    truncated: clampedOffset + page.length < entries.length,
+  };
 }
 
 // undelete_note(trash_path, to?) — move a note out of .trash back into the vault.

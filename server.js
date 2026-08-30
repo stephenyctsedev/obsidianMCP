@@ -343,17 +343,36 @@ function buildMcpServer() {
     {
       title: "List trashed notes",
       description:
-        "List notes currently in the vault's .trash/ folder (where delete_note moves them), newest first, with each note's original path and deletion time. Use undelete_note to restore one.",
-      inputSchema: {},
+        "List notes currently in the vault's .trash/ folder (where delete_note moves them), newest first, with each note's original path and deletion time. Returns up to `limit` entries (default 20, max 100) and reports the total, so page back through older deletions with `offset`. Use undelete_note to restore one.",
+      inputSchema: {
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Max entries to return (default 20, max 100)."),
+        offset: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Skip this many entries — page through a trash larger than `limit`."),
+      },
     },
-    withAudit("list_trash", async () => {
-      const entries = await listTrash();
-      if (entries.length === 0) {
+    withAudit("list_trash", async ({ limit, offset }) => {
+      const result = await listTrash({ limit, offset });
+      if (result.total === 0) {
         return "(trash is empty)";
       }
-      return entries
+      let text = result.entries
         .map((entry) => `${entry.path}\n  original: ${entry.original}  trashed: ${entry.trashedAt ?? "unknown"}`)
         .join("\n\n");
+      const to = result.offset + result.entries.length;
+      if (result.truncated || result.offset > 0) {
+        text += `\n\n(showing ${result.offset + 1}-${to} of ${result.total}`;
+        text += result.truncated ? ` — pass offset=${to} for older deletions)` : ")";
+      }
+      return text;
     })
   );
 
