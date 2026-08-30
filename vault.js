@@ -151,17 +151,122 @@ function resolveInTrash(relPath) {
   return abs;
 }
 
-// list_notes(folder?, includeBases?) — return relative paths of every .md file
-// (plus .base files when asked), optionally restricted to a subfolder.
-export async function listNotes(folder, { includeBases = false } = {}) {
+// list_notes caps. Unlike search/recent (clampLimit, max 100) a listing is a
+// navigation aid, so it gets a roomier ceiling — but never an unbounded one:
+// every path costs the caller context, so a vault that grows to thousands of
+// notes must not be able to blow the window in a single call.
+const LIST_DEFAULT_LIMIT = 200;
+const LIST_MAX_LIMIT = 1000;
+
+function clampListLimit(limit) {
+  return Number.isFinite(limit) && limit > 0
+    ? Math.min(Math.floor(limit), LIST_MAX_LIMIT)
+    : LIST_DEFAULT_LIMIT;
+}
+
+// Compile a shell-style glob into a case-insensitive RegExp: `*` matches within
+// one path segment, `**` crosses segments, `?` is a single non-slash character.
+// Everything else is literal.
+function globToRegExp(glob) {
+  let out = "";
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === "*") {
+      if (glob[i + 1] === "*") {
+        out += ".*";
+        i++;
+      } else {
+        out += "[^/]*";
+      }
+    } else if (ch === "?") {
+      out += "[^/]";
+    } else {
+      out += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${out}$`, "i");
+}
+
+// Collapse a flat file list into an `ls`-style view `depth` levels below the
+// listing scope: paths within the depth stay as files, anything deeper folds
+// into its ancestor folder carrying a recursive file count. Folders sort first.
+function collapseToDepth(relPaths, prefixLen, depth) {
+  const folders = new Map(); // folder path -> file count
+  const files = [];
+  for (const p of relPaths) {
+    const segments = p.slice(prefixLen).split("/");
+    if (segments.length <= depth) {
+      files.push({ type: "file", path: p });
+      continue;
+    }
+    const folder = p.slice(0, prefixLen) + segments.slice(0, depth).join("/");
+    folders.set(folder, (folders.get(folder) ?? 0) + 1);
+  }
+  const folderEntries = [...folders]
+    .map(([p, count]) => ({ type: "folder", path: p, count }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  return [...folderEntries, ...files];
+}
+
+// list_notes(folder?, { includeBases, pattern, depth, limit, offset }) — the
+// vault's .md files (plus .base files when asked) as relative paths.
+//
+// The result is ALWAYS capped: `total` reports how many entries matched so the
+// caller can tell a short list from a truncated one, and `offset` pages through
+// the rest. `pattern` filters by glob and `depth` collapses deep subtrees into
+// folder counts — both exist so a large vault can be navigated without paying
+// for every path in it.
+export async function listNotes(
+  folder,
+  { includeBases = false, pattern, depth, limit, offset } = {}
+) {
   let base = VAULT_ROOT;
   if (folder && folder.trim() !== "") {
     base = resolveInVault(folder, { requireMd: false });
   }
-  const files = includeBases
-    ? await walkByExt(base, [".md", ".base"])
-    : await walkMarkdown(base);
-  return files.map(toVaultRelative).sort();
+
+  if (depth != null && (!Number.isInteger(depth) || depth < 1)) {
+    throw new Error("depth must be an integer >= 1");
+  }
+  const clampedLimit = clampListLimit(limit);
+  const clampedOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+
+  const exts = includeBases ? [".md", ".base"] : [".md"];
+  // Sorted so which entries "win" under the cap is deterministic, not readdir order.
+  const files = (await walkByExt(base, exts)).map(toVaultRelative).sort();
+
+  // Length of the scope prefix, so `pattern` and `depth` see paths relative to
+  // `folder` rather than to the vault root ("" scope => prefixLen 0).
+  const baseRel = toVaultRelative(base);
+  const prefixLen = baseRel === "" ? 0 : baseRel.length + 1;
+
+  let matched = files;
+  if (pattern != null) {
+    if (typeof pattern !== "string" || pattern.trim() === "") {
+      throw new Error("pattern must be a non-empty string");
+    }
+    const re = globToRegExp(pattern.trim());
+    // A pattern without "/" matches the file name alone; one with "/" matches
+    // the whole scope-relative path.
+    const byName = !pattern.includes("/");
+    matched = files.filter((p) =>
+      re.test(byName ? p.slice(p.lastIndexOf("/") + 1) : p.slice(prefixLen))
+    );
+  }
+
+  const entries =
+    depth != null
+      ? collapseToDepth(matched, prefixLen, depth)
+      : matched.map((p) => ({ type: "file", path: p }));
+
+  const page = entries.slice(clampedOffset, clampedOffset + clampedLimit);
+  return {
+    entries: page,
+    total: entries.length,
+    offset: clampedOffset,
+    limit: clampedLimit,
+    truncated: clampedOffset + page.length < entries.length,
+  };
 }
 
 // read_note(path, { resolve }) — full content of a note. When the note embeds
@@ -279,10 +384,17 @@ function parseTrashPath(vaultRelPath) {
   return { original, trashedAt };
 }
 
-// list_trash() — every trashed note: its .trash path plus when it was trashed.
+// list_trash({ limit, offset }) — trashed notes, newest first: each one's
+// .trash path plus when it was trashed. Capped like every other listing (the
+// entries are two lines each, so the search/recent ceiling fits better than
+// list_notes'); `total` reports the full count and `offset` pages back through
+// older deletions.
 // walkMarkdown only filters entries INSIDE the directory it's given, so passing
 // the .trash dir itself works — hidden entries within .trash are still skipped.
-export async function listTrash() {
+export async function listTrash({ limit, offset } = {}) {
+  const clampedLimit = clampLimit(limit, 20);
+  const clampedOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+
   const trashDirAbs = path.resolve(VAULT_ROOT, ".trash");
   const files = await walkMarkdown(trashDirAbs);
 
@@ -302,7 +414,14 @@ export async function listTrash() {
     return b.trashedAt.localeCompare(a.trashedAt);
   });
 
-  return entries;
+  const page = entries.slice(clampedOffset, clampedOffset + clampedLimit);
+  return {
+    entries: page,
+    total: entries.length,
+    offset: clampedOffset,
+    limit: clampedLimit,
+    truncated: clampedOffset + page.length < entries.length,
+  };
 }
 
 // undelete_note(trash_path, to?) — move a note out of .trash back into the vault.
